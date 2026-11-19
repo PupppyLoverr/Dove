@@ -105,3 +105,109 @@ jobs:
             build/zr/release/keplorayx-engine
             build/zr/release/keplorayx-engine.exe
           if-no-files-found: error
+
+  package-macos:
+    # A dry run of the release script, so a packaging problem is a red check
+    # instead of a surprise at release time: the bundle is produced and
+    # uploaded, nothing is published. The cache from `build` makes the two
+    # cargo builds inside the script incremental.
+    name: package (macos-latest, dry run)
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            zr -> ../../build/zr
+            zr/apps/zgx -> ../../build/app
+          cache-on-failure: true
+
+      - name: Install Zig (macOS)
+        run: |
+          brew install zig@0.16 || brew install zig
+          ZIG_BIN="$(brew --prefix zig@0.16 2>/dev/null || brew --prefix zig)/bin"
+          echo "$ZIG_BIN" >> "$GITHUB_PATH"
+          echo "ZIG=$ZIG_BIN/zig" >> "$GITHUB_ENV"
+
+      - name: Package (bundle only, no dmg)
+        env:
+          DMG: "0"
+          CARGO_FLAGS: --locked
+        working-directory: zr
+        run: ./scripts/package-macos.sh
+
+      - name: The bundle is what the app needs
+        working-directory: zr
+        run: |
+          # A bundle that is missing the engine or the scripts starts into
+          # nothing on a machine that has never run this app.
+          APP="target/package/Keplorayx.app"
+          test -x "$APP/Contents/MacOS/keplorayx"
+          test -x "$APP/Contents/MacOS/keplorayx-engine"
+          test -f "$APP/Contents/Resources/ui/app.luau"
+          test -f "$APP/Contents/Resources/plugins-builtin/.keep" 2>/dev/null || test -d "$APP/Contents/Resources/plugins-builtin"
+          "$APP/Contents/MacOS/keplorayx-engine" --version
+          codesign --verify --strict "$APP"
+          du -sh "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keplorayx-macos-app
+          path: zr/target/package/Keplorayx-*.tar.gz
+          if-no-files-found: error
+
+  package-windows:
+    # The same dry run for the Windows installer: the zip and the Inno Setup
+    # installer are produced and uploaded, nothing is published.
+    name: package (windows-latest, dry run)
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            zr -> ../../build/zr
+            zr/apps/zgx -> ../../build/app
+          cache-on-failure: true
+
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Package
+        run: ./scripts/package-windows.ps1 -ReleasesUrl https://example.invalid/releases
+
+      - name: The package is what the app needs
+        run: |
+          # Missing the engine or the scripts means an install that starts into
+          # nothing on a machine that has never run this app.
+          $stage = Get-ChildItem -Directory "$PWD/target/package/zeron-*-windows-*" | Select-Object -First 1
+          if (-not $stage) { throw 'No staged package directory' }
+          foreach ($f in 'keplorayx.exe', 'keplorayx-engine.exe', 'ui/app.luau') {
+            if (-not (Test-Path -LiteralPath (Join-Path $stage.FullName $f))) { throw "missing $f in $($stage.Name)" }
+          }
+          & (Join-Path $stage.FullName 'keplorayx-engine.exe') --version
+          if (Get-ChildItem "$PWD/target/package/zeron-*-windows-*-setup.exe" | Measure-Object | Select-Object -ExpandProperty Count -eq 0) {
+            throw 'No installer produced'
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keplorayx-windows-package
+          path: |
+            zr/target/package/zeron-*-windows-*.zip
+            zr/target/package/zeron-*-windows-*-setup.exe
+          if-no-files-found: error

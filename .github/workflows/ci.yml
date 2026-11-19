@@ -1,5 +1,13 @@
 name: CI
 
+# The root workspace's crates: `crates/dove-*`, kept as the reference teardown
+# while `zr/` carries the shipping app. This job used to build and size-gate
+# `-p dove`, a package that does not exist here (apps/dove is excluded from the
+# workspace), so a green tick said nothing about anything shippable.
+#
+# The app that ships — `zr/apps/zgx` and `keplorayx-engine` — is built by
+# zgx-build.yml, on macOS and Windows.
+
 on:
   push:
     branches: [main]
@@ -63,35 +71,6 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --exclude dove
-
-      - name: Build release binary
-        run: cargo build -p dove -p dove-escrow --release
-
-      - name: Size gate
-        run: |
-          # 115 MB: the Linux binary reached 111.75 MB.
-          LIMIT=120586240
-          if [ -f target/release/dove.exe ]; then
-            BIN=target/release/dove.exe
-          else
-            BIN=target/release/dove
-          fi
-          BYTES=$(wc -c < "$BIN" | tr -d ' ')
-          MB=$(awk -v b="$BYTES" 'BEGIN { printf "%.2f", b / 1048576 }')
-          echo "Release binary: $BIN"
-          echo "Size: ${BYTES} bytes (${MB} MB)"
-          if [ "$BYTES" -gt "$LIMIT" ]; then
-            echo "::error::Release binary is ${MB} MB, exceeding the 115 MB limit"
-            exit 1
-          fi
-
-      - name: Upload release binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: dove-${{ matrix.os }}
-          path: |
-            target/release/dove
-            target/release/dove.exe
-            target/release/dove-escrow.exe
-          if-no-files-found: error
+        # (The app members are compiled by zgx-build.yml instead: they need
+        # Zig on macOS and WebKitGTK on Linux, and are not this job's subject.)
+        run: cargo test --workspace --exclude keplorayx

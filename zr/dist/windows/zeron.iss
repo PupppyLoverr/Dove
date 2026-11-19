@@ -23,6 +23,13 @@
 #ifndef OutputDir
   #define OutputDir "."
 #endif
+; The app's executable inside the staged package: `keplorayx.exe`, the
+; interface this branch builds, unless a caller passes another name. The
+; background engine beside it (`keplorayx-engine.exe`) is installed as a plain
+; file; the interface starts it from its own folder.
+#ifndef AppExe
+  #define AppExe "keplorayx.exe"
+#endif
 
 #if Arch == "aarch64"
   #define ArchAllowed "arm64"
@@ -54,7 +61,7 @@ MinVersion=10.0
 OutputDir={#OutputDir}
 OutputBaseFilename=zeron-{#AppVersion}-windows-{#Arch}-setup
 SetupIconFile=zeron.ico
-UninstallDisplayIcon={app}\zeron.exe
+UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName=Zeron
 WizardStyle=modern
 Compression=lzma2/max
@@ -68,29 +75,32 @@ RestartApplications=no
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#PackageDir}\zeron.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\keplorayx-engine.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PackageDir}\plugins-builtin\*"; DestDir: "{app}\plugins-builtin"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "{#PackageDir}\zeron-update.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Zeron"; Filename: "{app}\zeron.exe"
-Name: "{autodesktop}\Zeron"; Filename: "{app}\zeron.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Zeron"; Filename: "{app}\{#AppExe}"
+Name: "{autodesktop}\Zeron"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Registry]
 ; zeron:// conversation links — the scheme macOS registers in Info.plist and
 ; Linux in zeron.desktop.
 Root: HKCU; Subkey: "Software\Classes\zeron"; ValueType: string; ValueName: ""; ValueData: "URL:Zeron"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\zeron"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\zeron\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\zeron.exe"",0"
-Root: HKCU; Subkey: "Software\Classes\zeron\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zeron.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\zeron\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"",0"
+Root: HKCU; Subkey: "Software\Classes\zeron\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""
 
 [Run]
-Filename: "{app}\zeron.exe"; Description: "{cm:LaunchProgram,Zeron}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,Zeron}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Leftovers of in-app updates (crates/update/src/windows.rs).
-Type: files; Name: "{app}\zeron.exe.old"
+Type: files; Name: "{app}\{#AppExe}.old"
 Type: files; Name: "{app}\.zeron-update-incoming.exe"
 Type: filesandordirs; Name: "{app}\.zeron-update-*"

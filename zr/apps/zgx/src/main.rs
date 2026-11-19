@@ -1350,14 +1350,21 @@ pub(crate) fn ui_dir() -> PathBuf {
     }
 }
 
-/// `Contents/Resources/ui` of the bundle this executable runs from, if any.
+/// The `ui` carried beside this executable, if any: a `.app`'s
+/// `Contents/Resources/ui`, or `ui` in the executable's own folder (a Windows
+/// package, where that folder is the only place its scripts can live — falling
+/// back on `CARGO_MANIFEST_DIR` finds the machine that built it, not the one
+/// it runs on).
 fn bundled_ui() -> Option<PathBuf> {
     static BUNDLED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     BUNDLED
         .get_or_init(|| {
             let exe = std::env::current_exe().ok()?;
-            let ui = exe.parent()?.parent()?.join("Resources").join("ui");
-            ui.join("app.luau").is_file().then_some(ui)
+            let dir = exe.parent()?;
+            [dir.parent().map(|app| app.join("Resources").join("ui")), Some(dir.join("ui"))]
+                .into_iter()
+                .flatten()
+                .find(|ui| ui.join("app.luau").is_file())
         })
         .clone()
 }
