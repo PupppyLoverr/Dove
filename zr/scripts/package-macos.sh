@@ -76,8 +76,10 @@ install -m 755 "$ENGINE_BIN" "$APP/Contents/MacOS/keplorayx-engine"
 # reads them from a bundle. (Not zgx's generated types or the tests.)
 rsync -a --exclude '.zgx/' --exclude '/tests/' --exclude '.lock' --exclude '.DS_Store' \
   "$ROOT/apps/zgx/ui/" "$APP/Contents/Resources/ui/"
-[[ -d "$ROOT/apps/zgx/plugins-builtin" ]] && rsync -a --exclude '.zgx/' --exclude '.DS_Store' \
-  "$ROOT/apps/zgx/plugins-builtin/" "$APP/Contents/Resources/plugins-builtin/"
+if [[ -d "$ROOT/apps/zgx/plugins-builtin" ]]; then
+  rsync -a --exclude '.zgx/' --exclude '.DS_Store' \
+    "$ROOT/apps/zgx/plugins-builtin/" "$APP/Contents/Resources/plugins-builtin/"
+fi
 
 # Font licences: zr/crates/ui's bundled faces, and each of the app's own OFL
 # texts. (zr/crates/ui still holds the fonts' licences even though nothing
@@ -94,7 +96,10 @@ cp "$ROOT/crates/voice/NOTICE.md" "$APP/Contents/Resources/licenses/parakeet-v3.
 ICON_SRC=""
 for candidate in "$ROOT/dist/macos/icon-1024.png" \
                  "$REPO/apps/ios/Zeron/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png"; do
-  [[ -f "$candidate" ]] && { ICON_SRC="$candidate"; break; }
+  if [[ -f "$candidate" ]]; then
+    ICON_SRC="$candidate"
+    break
+  fi
 done
 if [[ -n "$ICON_SRC" ]]; then
   ICONSET="$OUT_DIR/keplorayx.iconset"
@@ -141,9 +146,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-ENTITLEMENTS="$ROOT/dist/macos/Zeron.entitlements"
+# Signed with Zeron's entitlements when they are in the tree (dist/macos is
+# not, on this branch); ad-hoc otherwise.
 SIGN_EXTRA=()
-[[ -f "$ENTITLEMENTS" ]] && SIGN_EXTRA=(--entitlements "$ENTITLEMENTS")
+if [[ -f "$ROOT/dist/macos/Zeron.entitlements" ]]; then
+  SIGN_EXTRA=(--entitlements "$ROOT/dist/macos/Zeron.entitlements")
+fi
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   # Hardened runtime + secure timestamp are both notarization requirements.
@@ -169,7 +177,9 @@ notarize() {
     --issuer "$NOTARY_ISSUER_ID" --wait
 }
 NOTARIZE=false
-[[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]] && NOTARIZE=true
+if [[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]]; then
+  NOTARIZE=true
+fi
 
 if $NOTARIZE; then
   # Staple the bundle BEFORE tarring it: the updater swaps the .app with no

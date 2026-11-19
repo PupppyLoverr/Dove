@@ -73,7 +73,7 @@ pub fn system_scale() -> f64 {
     // (Retina reads 2: the main display's pixels against the points it
     // reports for itself.)
     let display = CGDisplay::main();
-    let pixels = display.display_mode().map(|mode| mode.pixel_width() as f64).unwrap_or(0.);
+    let pixels = display.pixels_wide() as f64;
     let points = display.bounds().size.width;
     if pixels > 0. && points > 0. { pixels / points } else { 1. }
 }
@@ -95,7 +95,8 @@ fn top_centre() -> Option<WindowBounds> {
     }
     let scale = system_scale();
     let (w, h) = ((SIZE.0 * scale) as u32, (SIZE.1 * scale) as u32);
-    Some(WindowBounds { position: Some((((frame.size.width - SIZE.0) / 2.) * scale).round() as i32, 0), size: (w, h) })
+    let left = (((frame.size.width - SIZE.0) / 2.) * scale).round() as i32;
+    Some(WindowBounds { position: Some((left, 0)), size: (w, h) })
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -141,7 +142,7 @@ pub fn open(
             #[cfg(windows)]
             let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
             #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+            let _ = std::process::Command::new("open").arg("-R").arg(&**path).spawn();
         }
     });
     host.action("notch.focus", move |thread| {
@@ -885,7 +886,10 @@ fn watch(tell: flume::Sender<bool>) {
 /// island, and goes 450 ms after it leaves — the same as the Windows thread.
 #[cfg(target_os = "macos")]
 fn watch(tell: flume::Sender<bool>) {
-    use core_graphics::event::{CGEvent, CGEventSource, CGEventSourceStateID};
+    use core_graphics::{
+        event::CGEvent,
+        event_source::{CGEventSource, CGEventSourceStateID},
+    };
     let scale = system_scale();
     let reach_w = 460. * scale;
     let (mut shown, mut rested, mut away) = (false, 0u32, 0u32);
