@@ -20,7 +20,8 @@
 #        app and the dmg, which removes the Gatekeeper warning entirely.
 #        DMG=0 — the bundle and its tarball only (CI's dry run).
 #        CARGO_FLAGS=--locked in CI; CARGO_TARGET_DIR to build outside both
-#        workspaces' own target dirs.
+#        workspaces' own target dirs, or APP_TARGET_DIR and ENGINE_TARGET_DIR
+#        to point the two builds at them separately.
 #
 # What is NOT here yet: the in-app updater. crates/update looks for
 # `Zeron.app`, its launchd label `sh.zeron.app` and a `Contents/MacOS/zeron`
@@ -38,9 +39,10 @@ ARCH="$(uname -m)" # arm64 on Apple silicon runners
 read -r -a CARGO_EXTRA <<<"${CARGO_FLAGS:-}"
 
 # Each workspace has its own target dir (they set different profiles), and
-# CARGO_TARGET_DIR overrides both.
-APP_TARGET="${CARGO_TARGET_DIR:-$ROOT/apps/zgx/target}"
-ENGINE_TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+# CARGO_TARGET_DIR overrides both. CI points the two at the dirs its build job
+# filled, so a dry run is incremental rather than a second cold compile.
+APP_TARGET="${APP_TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/apps/zgx/target}}"
+ENGINE_TARGET="${ENGINE_TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}"
 APP_BIN="$APP_TARGET/release/keplorayx"
 ENGINE_BIN="$ENGINE_TARGET/release/keplorayx-engine"
 

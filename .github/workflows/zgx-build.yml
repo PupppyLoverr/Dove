@@ -158,6 +158,9 @@ jobs:
         env:
           DMG: "0"
           CARGO_FLAGS: --locked
+          # The build job's dirs, so this is an incremental rebuild.
+          APP_TARGET_DIR: ${{ github.workspace }}/build/app
+          ENGINE_TARGET_DIR: ${{ github.workspace }}/build/zr
         working-directory: zr
         run: ./scripts/package-macos.sh
 
@@ -211,6 +214,9 @@ jobs:
 
       - name: Package
         working-directory: zr
+        env:
+          # The build job's dir, so this is an incremental rebuild.
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/zr
         run: ./scripts/package-windows.ps1 -ReleasesUrl https://example.invalid/releases
 
       - name: The package is what the app needs
@@ -224,9 +230,8 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $stage.FullName $f))) { throw "missing $f in $($stage.Name)" }
           }
           & (Join-Path $stage.FullName 'keplorayx-engine.exe') --version
-          if (Get-ChildItem "$PWD/target/package/zeron-*-windows-*-setup.exe" | Measure-Object | Select-Object -ExpandProperty Count -eq 0) {
-            throw 'No installer produced'
-          }
+          $setups = @(Get-ChildItem "$PWD/target/package/zeron-*-windows-*-setup.exe")
+          if ($setups.Count -eq 0) { throw 'No installer produced' }
 
       - uses: actions/upload-artifact@v4
         with:
