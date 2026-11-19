@@ -69,6 +69,22 @@ export type Session = {
 }
 -- Its second action (⌘Enter): what the footer calls it, and what it does.
 export type Alt = { label: string, run: () -> () }
+-- One thing that can be done with a row, in its action panel (Tab): what it
+-- says, the keys that do it there or elsewhere ("cmd+c"), and what it does.
+export type Action = { label: string, key: string?, run: () -> () }
+-- What the preview pane (Space, or the column beside a wide enough window)
+-- says of a row: its title and its one line of facts, then its body — a
+-- thread's last turns, a file's opening lines, an action's sentence — and a
+-- note under them. `waiting` draws the body's shape while the host fetches
+-- it; `at` is the line the row's match is on, scrolled to and marked.
+export type Preview = {
+	title: string?,
+	meta: string?,
+	lines: { { who: string?, text: string } }?,
+	note: string?,
+	waiting: boolean?,
+	at: number?,
+}
 export type Item = {
 	id: string,
 	label: string,
@@ -106,6 +122,12 @@ export type Item = {
 	run: (() -> ())?,
 	verb: string?,
 	alt: Alt?,
+	-- The actions it offers in its panel (Tab): Open, Steer, Archive, Copy
+	-- path… Each with its keys, run in place (the palette closes first for
+	-- those that leave it).
+	actions: { Action }?,
+	-- What its preview shows (the pane at the right, or Space's card).
+	preview: (() -> Preview)?,
 }
 -- What a page says with nothing in it, or while it loads.
 export type Note = { title: string, hint: string? }
@@ -146,6 +168,11 @@ export type Props = {
 	-- What was used lately, by id, most recent first: listed first while
 	-- nothing is typed, and a little ahead in a search. Its own by default.
 	recent: State<{ string }>?,
+	-- The highlighted row, as it changes: what a host fetches a preview for.
+	on_select: ((item: Item) -> ())?,
+	-- Bumped by the host as a fetched preview lands (or fails), so the pane
+	-- is drawn again with it.
+	preview_rev: State<number>?,
 }
 
 -- The card's width, and the geometry of what it holds: the search's row,
@@ -154,6 +181,10 @@ export type Props = {
 -- from); the inset at the list's ends; a glyph's slot.
 local typing_paths: { () -> boolean }
 local W = 640
+-- The preview: the column's width, the window's width under which there is
+-- no column (Space shows the card over the list instead), and the card's
+-- width with it beside the list.
+local PREVIEW, PREVIEW_MIN = 268, 980
 local SEARCH_H, SCOPES_H, FOOT_H = 52, 38, 40
 local ROW, SESSION, HEAD, HEAD_FIRST, INSET, SLOT = 36, 52, 32, 26, 6, 18
 -- The list's height at most, and an empty one's.
@@ -165,16 +196,26 @@ local TOP = 88
 -- shrinks to there (about four rows) before the window clips the card.
 local BOTTOM_CLEAR, VIEW_MIN = 24, 160
 
--- The list's height at most in this window: VIEW_MAX, less whatever the
--- card would otherwise run past the window's foot. A host that feeds no
--- window size (a headless test) gets VIEW_MAX.
-local function view_max(island: boolean?): number
+-- The window's size, or 0 × 0 where none is fed (a headless test).
+local function window_size(): (number, number)
 	local window = (ui :: any).window
 	local state = if type(window) == "table" or type(window) == "userdata" then window.size else nil
 	local ok, v = pcall(function(): any
 		return if state ~= nil then state:get() else nil
 	end)
-	local h = if ok and type(v) == "table" and type(v.height) == "number" then v.height else 0
+	if ok and type(v) == "table" then
+		local w = if type(v.width) == "number" then v.width else 0
+		local h = if type(v.height) == "number" then v.height else 0
+		return w, h
+	end
+	return 0, 0
+end
+
+-- The list's height at most in this window: VIEW_MAX, less whatever the
+-- card would otherwise run past the window's foot. A host that feeds no
+-- window size (a headless test) gets VIEW_MAX.
+local function view_max(island: boolean?): number
+	local _, h = window_size()
 	if h <= 1 then
 		return VIEW_MAX
 	end
@@ -214,11 +255,31 @@ local SCOPES_SEARCHED = {
 	{ id = "files", label = "ds.command_palette.scope.files" },
 	{ id = "settings", label = "ds.command_palette.scope.settings" },
 }
+-- What a query's first character does (VS Code's model, and Spotlight's
+-- habits): `>` actions, `@` threads, `/` files, `~` settings. Typed, it
+-- narrows at once and the field says which scope it is in; the character
+-- stays in the field, after VS Code, so Backspace takes it back out.
+local PREFIXES: { [string]: string } = {
+	[">"] = "commands",
+	["@"] = "sessions",
+	["/"] = "files",
+	["~"] = "settings",
+}
+-- The scope a query puts itself in (nil: the one Tab left it in), and what
+-- is searched after the character.
+local function split_query(q: string): (string?, string)
+	local id = PREFIXES[string.sub(q, 1, 1)]
+	if id then
+		return id, string.sub(q, 2)
+	end
+	return nil, q
+end
 
 -- The sections the palette names itself (the rows keep these names, as
 -- data), each drawn in the locale's words; the rest are their callers'.
 local OWN_TITLES: { [string]: string } = {
 	Pinned = "ds.command_palette.pinned",
+	["Top Hit"] = "ds.command_palette.top_hit",
 	Recent = "ds.command_palette.recent",
 	["Loading…"] = "ds.command_palette.loading",
 }
@@ -672,6 +733,11 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	local scoped = props.root.scopes == true
 	local depth = ui.use_state(1)
 	local hi = ui.use_state(nil :: string?)
+	-- The action panel (Tab): open or not, and the action under its keys.
+	local panel = ui.use_state(false)
+	local act = ui.use_state(0)
+	-- Space's large preview: the pane over the list instead of beside it.
+	local large = ui.use_state(false)
 	local offset = ui.use_state(0)
 	-- Pages that load: what each loaded (by page), and whether the one shown
 	-- is still loading.
@@ -682,6 +748,20 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 
 	local function page(): Page
 		return stack[#stack].page
+	end
+
+	-- The scope in force: what the typed prefix puts it in (where this root
+	-- has that scope), else the one Tab left it in.
+	local function active_scope(): string
+		local id = split_query(query:get())
+		if id then
+			for _, s in SCOPES do
+				if s.id == id then
+					return id
+				end
+			end
+		end
+		return scope:get()
 	end
 
 	local function items_of(p: Page): { Item }
@@ -777,12 +857,24 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 
 	local function build()
 		local q = query:get()
-		local sc = scope:get()
+		-- (A typed prefix narrows at once, and wins over Tab's scope; one
+		-- this root has no scope for — "/" where nothing is searched — is
+		-- left as typed text.)
+		local prefix, typed = split_query(q)
+		local known = false
+		if prefix then
+			for _, s in SCOPES do
+				if s.id == prefix then
+					known = true
+				end
+			end
+		end
+		local sc = if known then prefix :: string else scope:get()
 		local d = depth:get()
 		local waiting = loading:get()
 		local p = page()
 		local at_root = d == 1
-		local terms = terms_of(q)
+		local terms = terms_of(if known then typed else q)
 		local used = recent:peek()
 		local used_at: { [string]: number } = {}
 		for i, id in used do
@@ -961,6 +1053,20 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				end
 				return a.first < b.first
 			end)
+		end
+		-- Spotlight's Top Hit: at the root with two letters or more, a row
+		-- whose match is strong (a word's start, an acronym) is lifted above
+		-- every section, so the first ⏎ goes where the eye already is.
+		local lifted: Hit? = nil
+		if at_root and scoped and sc == "all" and #(string.gsub(q, "%s", "")) >= 2 and #sections > 0 then
+			local head = sections[1]
+			local first = head.hits[1]
+			if first and first.score >= 500 and head.title ~= "Pinned" and head.title ~= "Recent" then
+				lifted = table.remove(head.hits, 1)
+			end
+		end
+		if lifted then
+			table.insert(sections, 1, { title = "Top Hit", hits = { lifted }, best = lifted.score, first = -1, total = 1 })
 		end
 		for _, s in sections do
 			s.total = #s.hits
@@ -1152,6 +1258,10 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		if n == 0 then
 			return
 		end
+		-- (Another row: the panel was about the last one.)
+		if panel:peek() then
+			panel:set(false)
+		end
 		local at = table.find(nav, hi:peek() or "") or 0
 		local i
 		if math.abs(by) > 1 then
@@ -1258,6 +1368,11 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			return
 		end
 		if r.kind == "more" then
+			-- (A typed prefix is not a scope Tab can move to: it is dropped,
+			-- so the scope row's own choice shows.)
+			if split_query(query:peek()) then
+				query:set("")
+			end
 			scope:set(r.scope or "all")
 			return
 		end
@@ -1295,10 +1410,20 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		local k = hi:get()
 		return if k then by_key[k] else nil
 	end
+	-- The highlighted row, and the actions it offers (Tab's panel). Both are
+	-- here, above the keys, because the panel's keys read them.
+	local function selected(): Item?
+		local r = current()
+		return if r then r.item else nil
+	end
+	local function actions_of(item: Item?): { Action }
+		return if item and item.actions then item.actions else {}
+	end
 	local function set_scope(by: number)
 		local at = 1
+		local now = active_scope()
 		for i, s in SCOPES do
-			if s.id == scope:peek() then
+			if s.id == now then
 				at = i
 			end
 		end
@@ -1361,6 +1486,35 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	local function keys(e): boolean
 		local k = e.key
 		local cmd = e.meta == true or e.cmd == true
+		-- The action panel holds the keys while it is open: ↑↓ through its
+		-- actions, ⏎ runs one, Esc or Tab closes it and the row keeps its
+		-- place.
+		if panel:peek() then
+			local acts = actions_of(selected())
+			if k == "Escape" or k == "Tab" then
+				if not e["repeat"] then
+					panel:set(false)
+				end
+				return true
+			elseif k == "ArrowDown" then
+				act:set(if #acts > 0 then (act:peek() + 1) % #acts else 0)
+				return true
+			elseif k == "ArrowUp" then
+				act:set(if #acts > 0 then (act:peek() - 1 + #acts) % #acts else 0)
+				return true
+			elseif k == "Enter" then
+				local a = acts[act:peek() + 1]
+				local item = selected()
+				if a and item and not e["repeat"] then
+					panel:set(false)
+					remember(item.id)
+					open:set(false)
+					a.run()
+				end
+				return true
+			end
+			return false
+		end
 		if k == "ArrowDown" or (e.ctrl and (k == "n" or k == "j")) then
 			if cmd then
 				jump(1)
@@ -1398,6 +1552,12 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				return true
 			end
 			local r = by_key[hi:peek() or ""]
+			-- The row's actions (macOS 27's Tab), the panel showing them.
+			if r and r.item and not e.shift and #actions_of(r.item) > 0 then
+				act:set(0)
+				panel:set(true)
+				return true
+			end
 			if r and r.item and r.item.page and not e.shift then
 				activate(r.key, false)
 			elseif depth:peek() == 1 and scoped then
@@ -1405,8 +1565,14 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			end
 			return true
 		elseif k == "ArrowRight" then
-			-- At the field's end, into the highlighted row's page.
+			-- At the field's end, the row's actions (where it has them, as Tab
+			-- does), else into its page.
 			local r = by_key[hi:peek() or ""]
+			if r and r.item and #actions_of(r.item) > 0 then
+				act:set(0)
+				panel:set(true)
+				return true
+			end
 			if r and r.item and r.item.page and field then
 				local _, b = field:selection()
 				if b == nil or b >= utf8.len(query:peek()) then
@@ -1427,9 +1593,20 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				return true
 			end
 			return false
+		elseif k == " " and query:peek() ~= "" then
+			-- Space previews without leaving the query (Spotlight's Quick
+			-- Look); the pane alone when it is already beside the list.
+			if not e["repeat"] then
+				large:set(not large:peek())
+			end
+			return true
 		elseif k == "Escape" then
-			-- One step at a time: the search, then the page, then the palette.
-			if query:peek() ~= "" then
+			-- One step at a time: the large preview, the search, the page,
+			-- then the palette.
+			if large:peek() then
+				large:set(false)
+				return true
+			elseif query:peek() ~= "" then
 				query:set("")
 				return true
 			elseif depth:peek() > 1 then
@@ -1528,6 +1705,33 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			-- (A root without scopes is a step: its title shows.)
 			return depth:get() > 1 or not scoped
 		end, crumbs),
+		-- A typed prefix, said in the field: which scope the letters after
+		-- it are searched in (the character itself stays, as it does in VS
+		-- Code, so Backspace takes it back out).
+		ui.show(function(): boolean
+			return split_query(query:get()) ~= nil
+		end, ui.row {
+			h = 20,
+			px = "$space.2",
+			shrink = 0,
+			rounded = "$radius.sm",
+			bg = "$zeron.selected.flat.bg",
+			items = "center",
+			ui.text {
+				function(): string
+					local id = split_query(query:get())
+					for _, s in SCOPES do
+						if s.id == id then
+							return locale.s(s.label)
+						end
+					end
+					return ""
+				end,
+				text_size = "$font.size.xs",
+				weight = "$font.weight.medium",
+				color = "$text.secondary",
+			},
+		}),
 		ui.input(EditorMenu.on({
 			id = "palette-search",
 			value = query,
@@ -1559,7 +1763,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	local scopes: { Node } = {}
 	for i, s in SCOPES do
 		local function chosen(): boolean
-			return scope:get() == s.id
+			return active_scope() == s.id
 		end
 		table.insert(
 			scopes,
@@ -1929,6 +2133,338 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		end,
 	}
 
+	-- The highlighted row, and what can be done with it (defined above,
+	-- with the keys: the panel's keys read them).
+	-- Whether the pane has a column of its own: a window wide enough for the
+	-- list and it (otherwise Space shows it over the list).
+	local function wide(): boolean
+		-- (A host that feeds no window size — or not yet, on the frame the
+		-- palette opens — gets the card alone: never a pane wider than the
+		-- window it sits in.)
+		local w, _ = window_size()
+		return w > 1 and w >= PREVIEW_MIN
+	end
+	-- Tab's panel, open on the highlighted row.
+	local function acting(): boolean
+		return panel:get() and selected() ~= nil
+	end
+
+	-- What the highlighted row says of itself, read as the pane draws (never
+	-- kept): the host's preview where it has one, else the row's own line.
+	local function shape(): Preview?
+		if props.preview_rev then
+			props.preview_rev:get()
+		end
+		local item = selected()
+		if not item then
+			return nil
+		end
+		if item.preview then
+			return item.preview()
+		end
+		local s = item.session
+		local hint = item.hint
+		return {
+			title = item.label,
+			meta = if s and s.branch then s.branch else item.keywords,
+			note = if type(hint) == "function" then hint() elseif type(hint) == "string" then hint else nil,
+		}
+	end
+	local function line_of(i: number): { who: string?, text: string }?
+		local p = if acting() then nil else shape()
+		local lines = if p then p.lines else nil
+		return if lines then lines[i] else nil
+	end
+	local function action_of(i: number): Action?
+		return actions_of(selected())[i]
+	end
+	-- A file's lines are drawn as code, a thread's as prose: the pane is one
+	-- or the other, never both, so it asks once.
+	local function mono(): boolean
+		local p = shape()
+		local first = if p and p.lines then p.lines[1] else nil
+		return first ~= nil and first.who == nil
+	end
+
+	local function title_text(): string
+		if acting() then
+			return locale.s("ds.command_palette.actions")
+		end
+		local p = shape()
+		local item = selected()
+		return if p and p.title then p.title :: string elseif item then item.label else ""
+	end
+	local function meta_text(): string
+		local p = if acting() then nil else shape()
+		return if p and p.meta then p.meta :: string else ""
+	end
+	local function note_text(): string
+		if acting() then
+			return if #actions_of(selected()) == 0 then locale.s("ds.command_palette.no_actions") else ""
+		end
+		local p = shape()
+		if p == nil then
+			return if selected() == nil then locale.s("ds.command_palette.no_preview") else ""
+		end
+		return if p.note then p.note :: string else ""
+	end
+	local function waiting(): boolean
+		local p = shape()
+		return not acting() and p ~= nil and p.waiting == true
+	end
+	local function marked(i: number): boolean
+		local p = shape()
+		return p ~= nil and p.at == i
+	end
+
+	local pane_body: { Node } = {}
+	-- The body's lines, in slots: each drawn only while the row has one
+	-- there, and each reading it as it draws. Prose and code are two sets
+	-- because a type's size and face are not things a node can change.
+	local PANE_LINES = 14
+	for i = 1, PANE_LINES do
+		local n = i
+		local function shown(): boolean
+			return line_of(n) ~= nil
+		end
+		table.insert(pane_body, ui.show(shown, ui.column {
+			w_full = true,
+			shrink = 0,
+			gap = 1,
+			py = 1,
+			-- (A turn's speaker above its words; a file's line alone.)
+			ui.show(function(): boolean
+				local l = line_of(n)
+				return l ~= nil and mono() == false and l.who ~= nil and l.who ~= ""
+			end, ui.text {
+				function(): string
+					local l = line_of(n)
+					return if l and l.who then l.who :: string else ""
+				end,
+				text_size = "$font.size.xs",
+				color = "$text.tertiary",
+			}),
+			ui.text {
+				function(): string
+					local l = line_of(n)
+					return if l and l.text then l.text else ""
+				end,
+				text_size = function(): string
+					return if mono() then "$font.size.xs" else "$font.size.sm"
+				end,
+				font = function(): any
+					return if mono() then "$font.mono" else nil
+				end,
+				color = function(): string
+					return if marked(n) then "$text.primary" else "$text.secondary"
+				end,
+				wrap = true,
+			},
+		}))
+	end
+
+	-- While the host fetches a file's lines: the body's shape.
+	local skeleton: { Node } = {}
+	for i = 1, 4 do
+		table.insert(skeleton, ui.div {
+			w_full = true,
+			shrink = 0,
+			h = 9,
+			rounded = "$radius.sm",
+			bg = "$zeron.secondary.bg",
+		})
+	end
+
+	-- The actions, in slots too, each with the keys that run it.
+	local pane_actions: { Node } = {}
+	local PANE_ACTS = 6
+	for i = 1, PANE_ACTS do
+		local n = i
+		local function lit(): boolean
+			return act:get() == n
+		end
+		table.insert(pane_actions, ui.show(function(): boolean
+			return action_of(n) ~= nil
+		end, ui.row {
+			w_full = true,
+			h = 30,
+			shrink = 0,
+			px = "$space.2",
+			gap = "$space.2",
+			items = "center",
+			rounded = "$radius.md",
+			bg = function(): any
+				return if lit() then "$zeron.selected.flat.bg" else "#00000000"
+			end,
+			on_click = function()
+				local a = action_of(n)
+				local item = selected()
+				if a and item then
+					act:set(n)
+					panel:set(false)
+					remember(item.id)
+					open:set(false)
+					a.run()
+				end
+			end,
+			FadeText {
+				function(): string
+					local a = action_of(n)
+					return if a then a.label else ""
+				end,
+				grow = 1,
+				text_size = "$font.size.sm",
+				color = function(): string
+					return if lit() then "$text.primary" else "$text.secondary"
+				end,
+			},
+			ui.show(function(): boolean
+				local a = action_of(n)
+				return a ~= nil and a.key ~= nil
+			end, Kbd {
+				function(): any
+					local a = action_of(n)
+					return if a and a.key then a.key else ""
+				end,
+				tone = "quiet",
+			}),
+		}))
+	end
+	-- (Tab's panel and the preview share the column: one is drawn at a time.)
+	for _, node in pane_actions do
+		table.insert(pane_body, ui.show(acting, node))
+	end
+
+	local function pane(): Node
+		return ui.column {
+			id = "palette-preview",
+			w = function(): number?
+				return if large:get() then nil else PREVIEW
+			end,
+			w_full = function(): boolean
+				return large:get()
+			end,
+			-- (As tall as the list, and tall enough to be worth looking at
+			-- when the list is a row or two.)
+			h = ui.computed(function(): number
+				return math.max(list_h(), 320)
+			end),
+			shrink = 0,
+			px = "$space.3",
+			py = "$space.3",
+			gap = "$space.2",
+			overflow = "hidden",
+			-- Its head: the row's glyph, its title and its one line of facts
+			-- (or the actions' own title while Tab's panel is open).
+			ui.show(function(): boolean
+				return not acting()
+			end, ui.row {
+				w_full = true,
+				shrink = 0,
+				gap = "$space.2",
+				items = "start",
+				ui.column {
+					grow = 1,
+					gap = 2,
+					FadeText {
+						title_text,
+						text_size = "$font.size.md",
+						color = "$text.primary",
+						wrap = true,
+					},
+					ui.show(function(): boolean
+						return meta_text() ~= ""
+					end, ui.text {
+						meta_text,
+						text_size = "$font.size.xs",
+						font = "$font.mono",
+						color = "$text.tertiary",
+						wrap = true,
+					}),
+				},
+			}),
+			ui.show(acting, ui.row {
+				w_full = true,
+				shrink = 0,
+				gap = "$space.2",
+				items = "center",
+				Text { locale.t("ds.command_palette.actions"), style = "label", tone = "tertiary", grow = 1 },
+				Kbd { text = "esc", tone = "quiet" },
+			}),
+			ui.show(waiting, ui.column { w_full = true, shrink = 0, gap = "$space.1", skeleton }),
+			-- (A preview longer than the pane scrolls, rather than reaching
+			-- past the card's foot.)
+			ui.scroll { w_full = true, grow = 1, gap = "$space.2", pane_body },
+			ui.show(function(): boolean
+				return note_text() ~= ""
+			end, ui.text {
+				note_text,
+				text_size = "$font.size.xs",
+				color = "$text.tertiary",
+				wrap = true,
+			}),
+			-- Its foot: the way into the actions, and Space's larger look.
+			ui.row {
+				w_full = true,
+				h = 22,
+				shrink = 0,
+				items = "center",
+				gap = "$zeron.space.tight",
+				-- (Tab opens this; the app's text field takes Tab before the
+				-- palette hears it, so it is a target as well — the same keys,
+				-- a click away.)
+				ui.show(function(): boolean
+					return not acting() and #actions_of(selected()) > 0
+				end, ui.button {
+					label = locale.t("ds.command_palette.actions"),
+					h = 20,
+					px = "$space.1",
+					gap = "$zeron.space.tight",
+					items = "center",
+					rounded = "$radius.sm",
+					hover = { bg = "$zeron.secondary.hover" },
+					on_click = function()
+						act:set(0)
+						panel:set(true)
+					end,
+					Kbd { keys = "tab", tone = "quiet" },
+					ui.text {
+						locale.s("ds.command_palette.actions"),
+						text_size = "$font.size.xs",
+						color = "$text.tertiary",
+					},
+				}),
+				ui.div { grow = 1 },
+				-- (Space, where the pane has no column of its own: it shows
+				-- then, large, over the list.)
+				ui.show(function(): boolean
+					return not wide()
+				end, Kbd { text = "space", tone = "quiet" }),
+			},
+		}
+	end
+
+	-- The pane beside the list: a hairline between them, and the list taking
+	-- what is left (or, Space's large preview, the pane in its place). Its
+	-- height is the list's, so a long preview is clipped, never reaching past
+	-- the card.
+	local function with_pane(listing: Node): Node
+		return ui.show(function(): boolean
+			-- (Nothing listed: nothing to preview, and the note has the room.)
+			return (wide() or panel:get() or large:get()) and shown_rows:get() > 0
+		end, ui.row {
+			w_full = true,
+			items = "stretch",
+			ui.show(function(): boolean
+				return not large:get()
+			end, ui.div { grow = 1, listing }),
+			ui.show(function(): boolean
+				return not large:get()
+			end, ui.div { w = 1, h_full = true, shrink = 0, bg = "$border" }),
+			pane(),
+		})
+	end
+
 	-- Nothing to list: the list's room as the dropdown's quiet field of
 	-- characters, clearing in the middle for what is missing and where else
 	-- to look.
@@ -1940,7 +2476,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			return p.empty or { title = locale.s("ds.command_palette.empty.nothing_yet") }
 		end
 		local c = counts:get()
-		if d == 1 and scoped and scope:get() ~= "all" and c.all > 0 then
+		if d == 1 and scoped and active_scope() ~= "all" and c.all > 0 then
 			return {
 				title = locale.s("ds.command_palette.empty.nothing_in_scope"),
 				hint = locale.s("ds.command_palette.empty.elsewhere", { n = count(c.all) }),
@@ -2216,9 +2752,9 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		search,
 		rule(),
 		scope_row,
-		ui.show(function(): boolean
+		with_pane(ui.show(function(): boolean
 			return shown_rows:get() > 0 or loading:get()
-		end, list, empty),
+		end, list, empty)),
 		rule(),
 		footer,
 	}
@@ -2229,12 +2765,18 @@ typing_paths = {}
 
 local Palette = ui.component(function(props: Props): Node
 	local recent = props.recent or ui.use_state({} :: { string })
+	-- The card takes the pane's width where the window has room for the list
+	-- and it (the same 980 the pane's column is gated on).
+	local w = ui.computed(function(): number
+		local sw, _ = window_size()
+		return if sw > 1 and sw >= PREVIEW_MIN then W + PREVIEW + 1 else W
+	end)
 	return ui.modal {
 		open = props.open,
 		label = locale.t("ds.command_palette.label"),
 		-- Its top held still, so only its foot moves.
 		placement = { x = "center", y = "start", inset = { TOP, 0, 0, 0 } },
-		w = W,
+		w = w,
 		p = 0,
 		gap = 0,
 		-- The card draws its own glass (so it can open with a scale); the
