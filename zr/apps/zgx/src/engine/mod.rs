@@ -29,7 +29,13 @@ const CONNECT_WAIT: Duration = Duration::from_secs(20);
 type Listener = Rc<dyn Fn(&Rpc)>;
 
 pub struct Engine {
+    /// This computer's engine: where its data is and how it is started.
+    /// Always here, whatever machine the connection is attached to: the
+    /// app's own files (plugins, wallpapers, caches) live beside it.
     config: Result<Config, manager::Refusal>,
+    /// The machine a link is attached to (src/kx/remote.rs), while one is:
+    /// the connection dials through its forward with its bearer instead.
+    machine: RefCell<Option<Machine>>,
     /// The connection, while there is one.
     rpc: RefCell<Option<Rpc>>,
     /// Its engine's workspace (`local`, `synced`, `development`), once asked.
@@ -43,6 +49,21 @@ pub struct Engine {
     /// the next window's when that window closes.
     tasks: RefCell<Option<TaskSpawner>>,
     supervising: Cell<bool>,
+}
+
+/// A machine the app's engine is attached to: a loopback port its forward
+/// answers on, and the bearer the engine there minted.
+#[derive(Clone)]
+pub struct Machine {
+    pub name: String,
+    pub port: u16,
+    token: rpc::Token,
+}
+
+impl Machine {
+    pub fn new(name: impl Into<String>, port: u16, token: rpc::Token) -> Self {
+        Self { name: name.into(), port, token }
+    }
 }
 
 thread_local! {
@@ -90,6 +111,7 @@ impl Engine {
         }
         Self {
             config,
+            machine: RefCell::default(),
             rpc: RefCell::default(),
             scope: RefCell::default(),
             signed_in: Cell::new(false),
@@ -102,9 +124,54 @@ impl Engine {
 
     /// Where the engine's IPC is (its port and data folder, which holds its
     /// token): for a helper process of this app's own that talks to it
-    /// directly (src/terminal.rs's bridge).
+    /// directly (src/terminal.rs's bridge). Only this computer's engine has
+    /// one: a machine's forward is not a data folder.
     pub fn ipc_endpoint(&self) -> Option<(u16, std::path::PathBuf)> {
+        if self.machine.borrow().is_some() {
+            return None;
+        }
         self.config.as_ref().ok().map(|c| (c.port, c.data_dir.clone()))
+    }
+
+    /// The machine the connection is attached to, if any.
+    pub fn machine(&self) -> Option<Machine> {
+        self.machine.borrow().clone()
+    }
+
+    /// Attach the connection to a machine: from the next dial on, its
+    /// forwarded port and its bearer, and no engine of ours to start.
+    pub fn use_machine(&self, name: impl Into<String>, port: u16, token: rpc::Token) {
+        *self.machine.borrow_mut() = Some(Machine::new(name, port, token));
+        self.redial();
+    }
+
+    /// Back to this computer's engine.
+    pub fn use_local(&self) {
+        if self.machine.borrow().is_some() {
+            self.machine.borrow_mut().take();
+            self.redial();
+        }
+    }
+
+    /// Ends the current connection (the supervisor dials again, wherever the
+    /// app is attached now).
+    fn redial(&self) {
+        self.restarting.set(false);
+        self.scope.borrow_mut().take();
+        if let Some(rpc) = self.rpc.borrow().clone() {
+            rpc.close();
+        }
+    }
+
+    /// Where the next dial goes: a machine's forward and bearer, or this
+    /// computer's engine and its token file. Whether an engine may be
+    /// started when nothing answers.
+    fn target(&self) -> Option<(u16, Option<String>, bool)> {
+        if let Some(machine) = self.machine.borrow().as_ref() {
+            return Some((machine.port, machine.token.read(), false));
+        }
+        let config = self.config.as_ref().ok()?;
+        Some((config.port, rpc::read_token(&config.data_dir), true))
     }
 
     /// How this app reaches and starts its engine (none: refused).
@@ -207,15 +274,17 @@ impl Engine {
 
     async fn supervise(self: Rc<Self>) {
         let _supervising = Supervising(self.clone());
-        let Ok(config) = &self.config else {
+        if self.config.is_err() {
             return;
-        };
+        }
         let mut spawner = Spawner::new();
         let mut delay = Duration::from_millis(250);
         let mut said = None::<String>;
         loop {
-            let token = rpc::read_token(&config.data_dir);
-            match rpc::connect(config.port, token).await {
+            let Some((port, token, may_start)) = self.target() else {
+                return;
+            };
+            match rpc::connect(port, token).await {
                 Ok(rpc) => {
                     delay = Duration::from_millis(250);
                     said = None;
@@ -241,7 +310,9 @@ impl Engine {
                     eprintln!("zeron-zgx: engine: connection ended ({reason})");
                 }
                 Err(DialError::Refused) => {
-                    if spawner.start_if_due(config) {
+                    // (A machine's engine is started over its own channel,
+                    // by whoever told this one where to dial.)
+                    if may_start && let Ok(config) = &self.config && spawner.start_if_due(config) {
                         delay = Duration::from_millis(500);
                     }
                 }

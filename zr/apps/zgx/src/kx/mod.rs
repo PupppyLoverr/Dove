@@ -20,6 +20,7 @@ pub mod launcher;
 pub mod media;
 pub mod notch;
 pub mod platform;
+pub mod remote;
 pub mod start;
 pub mod widgets;
 

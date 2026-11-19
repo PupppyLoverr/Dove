@@ -53,6 +53,24 @@ pub fn read_token(data_dir: &Path) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
+/// A bearer kept in memory: a machine's, read over its own channel on every
+/// link (src/kx/remote.rs) and never written down on this computer. A dial
+/// reads it as the engine's token file is read.
+#[derive(Clone, Default)]
+pub struct Token(Arc<Mutex<Option<String>>>);
+
+impl Token {
+    /// Keeps `token` as the bearer the next dial uses.
+    pub fn set(&self, token: Option<String>) {
+        *self.0.lock().unwrap() = token;
+    }
+
+    /// The bearer now, if there is one.
+    pub fn read(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 #[derive(Default)]
 struct Inbox {
     frames: VecDeque<Value>,
@@ -219,10 +237,12 @@ fn serve(mut socket: Socket, rx: mpsc::Receiver<String>, frames: Frames, #[cfg(u
                     Err(error) => return fail(error),
                 },
                 Err(mpsc::TryRecvError::Empty) => break,
-                // The client was dropped: close quietly.
+                // The client was dropped (or closed this link on purpose):
+                // close quietly, and say so, so nothing waits on it.
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let _ = socket.close(None);
                     let _ = socket.flush();
+                    frames.push(None, Some("closed".into()));
                     return;
                 }
             }
@@ -327,7 +347,7 @@ pub fn connect(port: u16, token: Option<String>) -> impl Future<Output = Result<
             Some(Ok(())) => {
                 let (tx, frames) = client.take().expect("polled after completion");
                 Poll::Ready(Ok(Rpc(Rc::new(Inner {
-                    tx,
+                    tx: RefCell::new(Some(tx)),
                     #[cfg(unix)]
                     bell: bell.take().expect("a bell, as the thread was started"),
                     frames,
@@ -361,7 +381,9 @@ struct Watching {
 }
 
 struct Inner {
-    tx: mpsc::Sender<String>,
+    /// The channel to the network thread; taken when this connection is
+    /// closed on purpose (`close`), which ends the thread and the socket.
+    tx: RefCell<Option<mpsc::Sender<String>>>,
     /// Wakes the network thread for what `tx` sent. (After `tx`, so the
     /// channel has closed by the time the thread wakes to its pipe closing.)
     #[cfg(unix)]
@@ -401,7 +423,17 @@ impl Rpc {
 
     /// A frame for the network thread to send, and the thread woken for it.
     fn post(&self, text: String) {
-        let _ = self.0.tx.send(text);
+        if let Some(tx) = self.0.tx.borrow().as_ref() {
+            let _ = tx.send(text);
+        }
+        #[cfg(unix)]
+        ring(&self.0.bell);
+    }
+
+    /// Ends this connection on purpose (attaching the app to another engine):
+    /// the network thread closes the socket, and `pump` returns.
+    pub fn close(&self) {
+        self.0.tx.borrow_mut().take();
         #[cfg(unix)]
         ring(&self.0.bell);
     }
@@ -633,7 +665,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<String>();
         let frames = Frames(Arc::default());
         let rpc = Rpc(Rc::new(Inner {
-            tx,
+            tx: RefCell::new(Some(tx)),
             bell: Arc::new(bell),
             frames: frames.clone(),
             next_id: Cell::new(1),

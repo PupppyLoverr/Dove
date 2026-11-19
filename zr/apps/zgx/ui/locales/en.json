@@ -2138,6 +2138,51 @@
       "yesterday": "Yesterday",
       "empty_title": "No history yet",
       "off": "Keep history is off, so pages you visit aren’t kept."
+    },
+    "machines": {
+      "title": "Machines",
+      "terms": "machines ssh remote server vps own computer bring your own key cloud host fingerprint",
+      "description": "Computers you already own, reached over your own ssh. A machine's threads run on its own engine, scripts/cloud-byok.md has what it can read, and nothing here is needed to use this computer alone.",
+      "yours": {
+        "label": "Your machines",
+        "terms": "connected offline host key fingerprint state"
+      },
+      "add": {
+        "label": "Add a machine",
+        "terms": "add new host server ssh address user",
+        "action": "Add a machine",
+        "description": "Its address over ssh, and which port and key if they aren't the usual ones.",
+        "title": "Add a machine",
+        "body": "The address you ssh to, as you would type it: user@machine. Its host key is shown before anything is trusted.",
+        "target": "Address",
+        "port": "Port",
+        "key": "Private key (optional)"
+      },
+      "key": {
+        "title": "This machine's host key",
+        "body": "Accept {name}'s host key? It is what proves this computer is talking to that machine and not to something pretending to be it. Everything after this is encrypted, and the engine's own bearer is read over that.",
+        "accept": "Accept and connect",
+        "cancel": "Cancel"
+      },
+      "empty_title": "No machines yet",
+      "empty_body": "Everything runs on this computer. Add a machine you own to run threads there too.",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "accept_key": "Accept its key",
+      "forget": {
+        "action": "Forget",
+        "title": "Forget this machine?",
+        "body": "Your ssh access, its engine and everything on it stay exactly as they are. {name} is forgotten here: the address, and the host key this app pinned."
+      },
+      "reads": "Reads: {dir} — its threads, its files, keys you put there.",
+      "home": {
+        "label": "This computer",
+        "description": "Back to running everything here. The machine keeps working, and its threads are waiting there when you connect again.",
+        "action": "Run here again"
+      },
+      "couldnt_add": "That machine couldn't be added",
+      "couldnt_connect": "That machine couldn't be connected",
+      "couldnt_save": "The host key couldn't be kept"
     }
   },
   "common": {
@@ -2284,6 +2329,11 @@
         "rename_title": "Rename session",
         "name": "Name",
         "name_placeholder": "Session name"
+      },
+      "machine": {
+        "running_on": "Running on {name}",
+        "other": "{state} · {name}",
+        "here": "This computer"
       }
     },
     "boundary": {

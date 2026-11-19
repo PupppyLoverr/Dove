@@ -64,6 +64,8 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
     crate::kx::buddies::install(cx, host);
     // A buddy's computer: a sandbox of its own, through cua.
     crate::kx::computers::install(host);
+    // Machines you own, over your own ssh (cloud mode with your own key).
+    crate::kx::remote::install(cx, host);
     // Or in the cloud, on Boat, with the key the person gives.
     crate::kx::keys::install(host);
     crate::kx::connections::install(host);

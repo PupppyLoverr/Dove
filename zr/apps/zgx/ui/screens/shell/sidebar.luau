@@ -39,6 +39,9 @@ require("@app/kx/browser_agent")
 -- roster stands in this sidebar's place while their space shows; and what
 -- the clock sends them is sent from here on.
 local buddies = require("@app/kx/buddies/store")
+-- Machines you own (ui/kx/machines): where these threads are running, when
+-- it isn't this computer.
+local machines = require("@app/kx/machines")
 local roster = require("@app/kx/buddies/sidebar")
 require("@app/kx/buddies/runner")
 
@@ -803,6 +806,7 @@ local function foot_notes(): Node
 	return ui.column {
 		w_full = true,
 		shrink = 0,
+		machines.line(),
 		account_row(),
 		connection_line(),
 		ui.div {
