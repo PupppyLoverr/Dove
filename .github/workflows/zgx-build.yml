@@ -210,9 +210,11 @@ jobs:
           }
 
       - name: Package
+        working-directory: zr
         run: ./scripts/package-windows.ps1 -ReleasesUrl https://example.invalid/releases
 
       - name: The package is what the app needs
+        working-directory: zr
         run: |
           # Missing the engine or the scripts means an install that starts into
           # nothing on a machine that has never run this app.
