@@ -93,8 +93,26 @@ jobs:
         run: |
           # Compiling is not running: a binary that links but aborts on start
           # still ships. `--version` starts, prints, and exits with no window.
+          #
+          # (`timeout` is GNU coreutils and is not on a macOS runner, so the
+          # limit is bash's own.)
+          within() {
+            local limit="$1"; shift
+            "$@" &
+            local pid=$! n=0
+            while kill -0 "$pid" 2>/dev/null; do
+              if [ "$n" -ge "$limit" ]; then
+                kill "$pid" 2>/dev/null
+                echo "::error::$1 did not exit within ${limit}s"
+                return 1
+              fi
+              sleep 1
+              n=$((n + 1))
+            done
+            wait "$pid"
+          }
           ./build/zr/release/keplorayx-engine --version
-          timeout 60 ./build/app/release/keplorayx --version
+          within 60 ./build/app/release/keplorayx --version
 
       - uses: actions/upload-artifact@v4
         with:
@@ -113,6 +131,9 @@ jobs:
     # cargo builds inside the script incremental.
     name: package (macos-latest, dry run)
     needs: build
+    # (Runs even when one build leg failed: the packaging script builds what it
+    # needs itself, and its own faults should not wait behind someone else's.)
+    if: ${{ !cancelled() }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -165,6 +186,7 @@ jobs:
     # installer are produced and uploaded, nothing is published.
     name: package (windows-latest, dry run)
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     defaults:
       run:
