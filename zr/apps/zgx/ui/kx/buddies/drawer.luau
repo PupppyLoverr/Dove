@@ -466,6 +466,40 @@ local GrokImport = ui.component(function(): Node
 		end
 		return out
 	end
+	-- (Only plain data can be held in a state: what came back is counted out
+	-- into strings and numbers first.)
+	local function plain(res: any): any
+		local bots = {}
+		for _, b in res.bots or {} do
+			local skipped = {}
+			for _, sk in b.skipped or {} do
+				table.insert(skipped, { path = tostring(sk.path or ""), why = tostring(sk.why or "") })
+			end
+			local counts = {}
+			for k, v in b.counts or {} do
+				counts[k] = tonumber(v) or 0
+			end
+			table.insert(bots, {
+				name = tostring(b.name or ""),
+				new = b.new == true,
+				job = tostring(b.job or ""),
+				note = if b.note ~= nil then tostring(b.note) else nil,
+				counts = counts,
+				skipped = skipped,
+			})
+		end
+		local absent = {}
+		for _, w in res.absent or {} do
+			table.insert(absent, tostring(w))
+		end
+		return {
+			bots = bots,
+			absent = absent,
+			dropped = tonumber(res.dropped) or 0,
+			source = if res.source ~= nil then tostring(res.source) else nil,
+			stopped_short = res.stopped_short == true,
+		}
+	end
 	local function run()
 		local from = import_from:peek()
 		local names = chosen()
@@ -476,7 +510,7 @@ local GrokImport = ui.component(function(): Node
 		local everyone = #names == #(bots:peek() or {})
 		ui.call("kx.grokbot.import", { path = from, names = if everyone then nil else names }):after(function(res: any)
 			busy:set(false)
-			done:set(if type(res) == "table" then res else { bots = {} })
+			done:set(plain(if type(res) == "table" then res else {}))
 			local n = #((if type(res) == "table" then res.bots else nil) or {})
 			ds.toast.show {
 				title = if n == 1 then "Brought 1 bot across" else `Brought {n} bots across`,
@@ -529,16 +563,14 @@ local GrokImport = ui.component(function(): Node
 		}
 	end
 	local function results(res: any): Node
-		local rows: { any } = {}
+		local rows: { any } = { w_full = true, gap = "$space.2" }
 		for _, b in res.bots or {} do
 			table.insert(rows, result(b))
 		end
 		return ui.column {
 			w_full = true,
 			gap = "$space.2",
-			ui.column { w_full = true, gap = "$space.2", ui.each(rows, function(n: any): Node
-				return n
-			end, { w_full = true }) },
+			ui.column(rows),
 			ui.show(function(): boolean
 				return res.absent ~= nil and #res.absent > 0
 			end, ds.Banner {

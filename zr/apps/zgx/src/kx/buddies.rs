@@ -1760,6 +1760,21 @@ mod tests {
     }
 
     #[test]
+    fn importing_the_same_bot_twice_adds_to_it_and_never_makes_a_second() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = empty(&dir, Vec::new());
+        let first = state.decide(&bot("Invoice Chaser", Some("gb-1001"), "Chase them."));
+        assert!(first.is_new);
+        assert!(state.save_buddy(first.record).is_some());
+        let again = state.decide(&bot("Invoice Chaser", Some("gb-1001"), "Chase them."));
+        assert!(!again.is_new);
+        assert_eq!(again.record["name"], json!("Invoice Chaser"));
+        assert_eq!(again.record["imported_from"], json!("grokbot:id:gb-1001"));
+        let count = state.buddies.borrow().len();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn an_older_import_learns_its_id_and_its_history_moves_with_it() {
         let dir = tempfile::tempdir().unwrap();
         // From before a bot carried its id: keyed by the name it had then.
