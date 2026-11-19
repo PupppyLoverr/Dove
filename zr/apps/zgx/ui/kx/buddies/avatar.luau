@@ -449,17 +449,51 @@ local View = ui.component(function(props: Props): Node
 	local function standing(): string?
 		return if props.standing then props.standing() else nil
 	end
-	-- (Its blink: shut for a moment every few seconds, each on its own beat.)
+	-- (Its blink: shut for a moment every few seconds, each on its own beat —
+	-- but only while the window is someone's to look at. Left running, six of
+	-- these on a buddy roster drew 2.4 frames a second of 0.0 megapixels for
+	-- ever: the window never went quiet, and idle cost a core's worth of
+	-- presents for a blink nobody could see.)
 	local shut = ui.use_state(false)
 	if props.live then
 		local beat = 3400 + hash(props.seed or "") % 2600
-		local stop = ui.every(beat, function()
-			shut:set(true)
-			ui.after(130, function()
+		local stop_blink: (() -> ())? = nil
+		local function watched(): boolean
+			-- (`ui.window.active` follows the window being the active one;
+			-- a host that doesn't say reads as watched.)
+			local on, active = pcall(function()
+				return ui.window.active:get()
+			end)
+			local shows, shown = pcall(function()
+				return ui.window.shown:get()
+			end)
+			return (not on or active ~= false) and (not shows or shown ~= false)
+		end
+		ui.effect(function()
+			if stop_blink then
+				stop_blink()
+				stop_blink = nil
+			end
+			-- (A face that stopped being watched opens its eyes.)
+			if shut:peek() then
 				shut:set(false)
+			end
+			if not watched() then
+				return
+			end
+			stop_blink = ui.every(beat, function()
+				shut:set(true)
+				ui.after(130, function()
+					shut:set(false)
+				end)
 			end)
 		end)
-		ui.on_cleanup(stop)
+		ui.on_cleanup(function()
+			if stop_blink then
+				stop_blink()
+				stop_blink = nil
+			end
+		end)
 	end
 	-- (Its motion while it works: counted on the one shared beat, from
 	-- when it starts working to when it stops.)
