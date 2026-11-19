@@ -1,0 +1,107 @@
+name: zgx build
+
+# Builds the app this branch actually ships, on both platforms it targets:
+#
+#   engine  `zr/`         -> keplorayx-engine
+#   app     `zr/apps/zgx` -> keplorayx
+#
+# `ci.yml` builds the root workspace (`crates/dove-*` + `apps/keplorayx`, the
+# Wave 1 reference) and `package.yml` builds the Dove installer pipeline; none
+# of them compile `zr/`. This is the job that would have caught the 29 m 33 s
+# cold engine compile on a laptop (KEPL-9), and the one that says whether the
+# macOS paths in `zr/apps/zgx` have ever compiled.
+#
+# The two workspaces get their own target dir: they configure different
+# profiles (`zr/apps/zgx` optimises every dependency at opt-level 3, `zr/` does
+# not), so one shared dir makes each build invalidate the other's artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    # Every branch, so a zgx/* branch gets a real answer without a PR.
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: zgx-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Absolute target dirs, because `<repo>/.cargo/config.toml` otherwise
+          # wins and sends both builds to `C:/dvw/target-kx-zgx`, a
+          # developer's Windows path.
+          workspaces: |
+            zr -> ../../build/zr
+            zr/apps/zgx -> ../../build/app
+          cache-on-failure: true
+
+      - name: Install Zig (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # zgx-desktop's `ghostty` feature builds Ghostty from source, and
+          # Ghostty's build is Zig 0.16 (zr/apps/zgx/README.md). Without it the
+          # build stops and says so.
+          brew install zig@0.16 || brew install zig
+          ZIG_BIN="$(brew --prefix zig@0.16 2>/dev/null || brew --prefix zig)/bin"
+          echo "$ZIG_BIN" >> "$GITHUB_PATH"
+          echo "ZIG=$ZIG_BIN/zig" >> "$GITHUB_ENV"
+          "$ZIG_BIN/zig" version
+
+      - name: Build the engine
+        working-directory: zr
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/zr
+        run: cargo build --release --locked -p zeron --bin keplorayx-engine
+
+      - name: Build the app
+        working-directory: zr/apps/zgx
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/app
+        run: cargo build --release --locked
+
+      - name: Put the engine beside the app
+        run: |
+          # The app starts `keplorayx-engine` from its own directory
+          # (src/engine/manager.rs), which is also how the bundle is laid out.
+          cp build/zr/release/keplorayx-engine* build/app/release/
+          ls -la build/app/release/keplorayx build/app/release/keplorayx-engine*
+
+      - name: Prove both binaries start
+        run: |
+          # Compiling is not running: a binary that links but aborts on start
+          # still ships. `--version` starts, prints, and exits with no window.
+          ./build/zr/release/keplorayx-engine --version
+          timeout 60 ./build/app/release/keplorayx --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keplorayx-${{ matrix.os }}
+          path: |
+            build/app/release/keplorayx
+            build/app/release/keplorayx.exe
+            build/zr/release/keplorayx-engine
+            build/zr/release/keplorayx-engine.exe
+          if-no-files-found: error
