@@ -142,7 +142,7 @@ pub fn open(
             #[cfg(windows)]
             let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
             #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg("-R").arg(&**path).spawn();
+            let _ = std::process::Command::new("open").arg("-R").arg(&*path).spawn();
         }
     });
     host.action("notch.focus", move |thread| {
