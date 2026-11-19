@@ -150,7 +150,41 @@ enum Screen {
     Kx(&'static str),
 }
 
+/// The program's allocator (zgx-desktop's `mimalloc` feature) hands freed
+/// pages back to the system, but only after a delay: 10 ms by default, and on
+/// Windows the delay is what keeps them. Measured at 20 sessions, a window at
+/// rest held 363 MB of private memory with 92 MB in use, and asking for the
+/// purge at once took 57 MB of it back (`MIMALLOC_PURGE_DELAY=0` did the same
+/// from the environment). Nothing else changes: a purged page costs a fault
+/// when it is next needed. `mi_option_set` is mimalloc's own, in the library
+/// the `mimalloc` crate links; `mi_option_purge_delay` is its option 15
+/// (mimalloc.h's `mi_option_e`, v3, which is the version the crate builds).
+#[cfg(feature = "mimalloc")]
+mod purging {
+    /// `mi_option_purge_delay`: 0 purges at once, -1 never.
+    const PURGE_DELAY: std::ffi::c_int = 15;
+
+    unsafe extern "C" {
+        fn mi_option_set(option: std::ffi::c_int, value: std::ffi::c_long);
+    }
+
+    pub fn install() {
+        // SAFETY: mimalloc's option setter, with an option it defines and a
+        // delay in its range. It only stores a number.
+        unsafe { mi_option_set(PURGE_DELAY, 0) };
+    }
+}
+
+/// A build without mimalloc has nothing to purge.
+#[cfg(not(feature = "mimalloc"))]
+mod purging {
+    pub fn install() {}
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before anything is allocated and freed in earnest: freed pages go back
+    // to the system at once (see `purging`).
+    purging::install();
     // A terminal tab's bridge (src/terminal.rs): this binary, run by zgx's
     // terminal, passing a shell's bytes to and from the engine.
     let argv: Vec<String> = std::env::args().collect();
@@ -632,9 +666,22 @@ fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
 /// `script_host`, its script at `path` (the main window's, in its template's
 /// folder).
 fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptHost {
+    // Loading the shell is one evaluation of a large script, and zgx's default
+    // budget for one is 500 ms of CPU in a release build. A release build
+    // needs more than that here on this machine: `app.luau` was stopped midway
+    // and the window came up with nothing in it and nothing said
+    // (`screens/language.luau`, `ds/init.luau`). Loading happens once per
+    // window, so it gets room; a handler keeps its budget, to stop a runaway.
+    let limits = zgx_script::Limits {
+        load: Duration::from_secs(10),
+        ..Default::default()
+    };
     // Zeron's design system, lent to the window's plugins (`@ds`).
     let lent = path.clone();
-    let host = plugins::lend_design_system(ScriptHost::new(&cx.ui.runtime, path).app_id(APP_ID), &lent);
+    let host = plugins::lend_design_system(
+        ScriptHost::new(&cx.ui.runtime, path).app_id(APP_ID).limits(limits),
+        &lent,
+    );
     // The network, for `ui.fetch` and remote images: the app's scripts, and
     // plugins granted "network" (zgx's own transport; a plugin without the
     // grant reaches none).
@@ -1229,7 +1276,15 @@ fn zeron_window(width: f64, height: f64) -> WindowOptions {
         // window blurred, so it read flat), the transient ones Acrylic (what's
         // behind it blurred, as macOS's under-window glass is). A sheet's is
         // Acrylic.
-        glass: Some(Glass::new(if cfg!(windows) { GlassMaterial::Sheet } else { GlassMaterial::UnderWindowBackground }).plain()),
+        //
+        // `KX_GLASS=0` gives the window no backdrop at all, which is how the
+        // acrylic A/B is measured: the same window, the same work, once with
+        // DWM compositing a blurred backdrop behind it and once with nothing.
+        glass: if std::env::var_os("KX_GLASS").is_some_and(|v| v == "0") {
+            None
+        } else {
+            Some(Glass::new(if cfg!(windows) { GlassMaterial::Sheet } else { GlassMaterial::UnderWindowBackground }).plain())
+        },
         // (Windows: the caption buttons keep to the title row at any zoom.)
         caption_height: Some(32.),
         ..Default::default()

@@ -20,6 +20,12 @@ name = "keplorayx"
 path = "src/main.rs"
 
 [features]
+# The program's allocator is mimalloc (zgx-desktop's `mimalloc` feature, below),
+# and `main` asks it to hand freed pages back at once (`purging::install`).
+# Follow that feature: if zgx-desktop ever stops linking mimalloc, drop this
+# from the defaults and the app builds against the system allocator alone.
+default = ["mimalloc"]
+mimalloc = []
 # Zeron.app's beta (scripts/package-zgx-beta.sh): this interface as the
 # Zeron app itself, with the production edge and sign-in only (nothing of
 # staging's built in) and Zeron.app's own engine (the bundle's `Zeron Engine`,
