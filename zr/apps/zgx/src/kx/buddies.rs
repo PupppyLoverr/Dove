@@ -108,6 +108,12 @@ fn instructions(buddy: &Json, home: &Path, others: &[Json]) -> String {
     }
     out.push_str("\n\n## Your job\n\n");
     out.push_str(if job.is_empty() { "No job has been written yet. Ask the person what they want you to look after." } else { job });
+    // (A job too long to paste in every turn: it stays in its folder and this
+    // points at it, so the words are all there without costing every turn.)
+    if let Some(at) = buddy["imported_brief"]["path"].as_str().filter(|p| !p.is_empty()) {
+        let kb = buddy["imported_brief"]["kb"].as_u64().unwrap_or(0).max(1);
+        out.push_str(&format!("\n\nThe brief you came with is long ({kb} KB), so it is not repeated here: it is in your folder at `{at}`. Read it before your first answer, and again when the person asks about anything it covers."));
+    }
     out.push_str(&format!("\n\n## Where you work\n\nYour own folder is `{}`. Keep your notes, drafts and what you want to remember between runs here (a `notes.md` is a good place: read it when you start).", home.display()));
     if let Some(folder) = folder {
         out.push_str(&format!(" The folder you look after is `{folder}`."));
@@ -444,120 +450,271 @@ fn from_template(t: &Json) -> Result<(Json, Vec<Json>, Vec<(String, String)>), S
     Ok((bot, routines, skills))
 }
 
-/// A Grok Bot import: each bot in it a buddy here (or, one already here by
-/// that name, added to), all it had brought along. What it made goes to its
-/// Library (`From Grok Bot/`); its memories, skills, routines and chats to
-/// `.grokbot/`, which its instructions draw on. `only`: just those bots (by
-/// name). Routines are copied, never made into automations. The folders are
-/// read and copied off the window's thread: a bot's files can be thousands.
+/// A hash of a job as it was imported, so a re-import can tell whether the
+/// source changed without asking the person to diff two texts.
+fn job_hash(job: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in job.trim().as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// A Grok Bot bot counted out by kind, for a report or a preview.
+fn counts(bot: &grokbot::Bot) -> Json {
+    json!({
+        "profile": bot.count("profile"),
+        "conversations": bot.count("conversations"),
+        "memories": bot.count("memories"),
+        "skills": bot.count("skills"),
+        "routines": bot.count("routines"),
+        "files": bot.count("files"),
+    })
+}
+
+/// One source bot, decided: the buddy it becomes, and what taking it in did.
+struct Decided {
+    bot: grokbot::Bot,
+    record: Json,
+    is_new: bool,
+    /// What its job did: "taken", "replaced", "same", or "kept" (the source's
+    /// and the person's both changed, and theirs is kept).
+    job: &'static str,
+    /// Anything the person should know about this one.
+    note: Option<String>,
+}
+
+impl Decided {
+    fn id(&self) -> String {
+        self.record["id"].as_str().unwrap_or_default().to_owned()
+    }
+
+    /// Its files where they go in its folder: its own words to its profile,
+    /// its history under the folder named for its key.
+    fn placed(&self) -> Vec<grokbot::Item> {
+        self.bot
+            .files
+            .iter()
+            .map(|i| grokbot::Item { from: i.from.clone(), to: grokbot::place(&i.to, &self.bot.name, &self.bot.key) })
+            .collect()
+    }
+}
+
+impl State {
+    /// The buddy a source bot becomes: the one already here for it (by its key,
+    /// or by the record an older import made it under), its history moved to
+    /// where it belongs now, or a new one. Only a buddy that came from Grok Bot
+    /// is ever taken over: one made here is never captured for sharing a name.
+    fn decide(&self, bot: &grokbot::Bot) -> Decided {
+        let from = format!("grokbot:{}", bot.key);
+        let job = bot.job.trim();
+        let old = self.find_imported(&bot.key).or_else(|| self.find_named(&bot.name));
+        let (mut r, is_new) = match old {
+            Some(old) => {
+                let was = old["imported_from"].as_str().unwrap_or_default().to_owned();
+                let mut r = old;
+                let home = self.dir.join("buddies").join(r["id"].as_str().unwrap_or_default());
+                // (What an older import put under the name it had then.)
+                let tail = was.trim_start_matches("grokbot:").to_owned();
+                let candidates: Vec<String> = [grokbot::dir_key(&tail), tail, r["name"].as_str().unwrap_or_default().to_owned()].to_vec();
+                settle_history(&home, &candidates, &bot.key);
+                (r, false)
+            }
+            None => {
+                let mut name = bot.name.clone();
+                // (A buddy made here with that name keeps it: this one is
+                // told apart by where it came from, not by name.)
+                if self.buddies.borrow().iter().any(|b| b["name"].as_str().is_some_and(|n| n.trim().eq_ignore_ascii_case(&bot.name))) {
+                    name = format!("{} (Grok Bot)", bot.name);
+                }
+                (
+                    json!({
+                        "id": new_id("b"),
+                        "name": name,
+                        "role": "",
+                        "instructions": "",
+                        "permissions": "draft",
+                        "models": [],
+                        "imported_from": from,
+                    }),
+                    true,
+                )
+            }
+        };
+        let had = r["instructions"].as_str().unwrap_or("").trim().to_owned();
+        let stored = r["imported_hash"].as_str().map(str::to_owned);
+        let (text, action, note) = if job.is_empty() {
+            (had.clone(), "same", None)
+        } else if had.is_empty() {
+            (job.to_owned(), "taken", None)
+        } else if stored.as_deref() == Some(job_hash(job).as_str()) {
+            (had.clone(), "same", None)
+        } else if stored.as_deref() == Some(job_hash(&had).as_str()) {
+            (job.to_owned(), "replaced", None)
+        } else if stored.is_none() && had == job {
+            (had.clone(), "same", None)
+        } else {
+            (
+                had.clone(),
+                "kept",
+                Some("Its job has changed in Grok Bot and been written here too, so the one here is kept. Grok Bot's own words are in its folder, under `.grokbot/profile`.".to_owned()),
+            )
+        };
+        r["instructions"] = json!(text);
+        r["imported_from"] = json!(from);
+        r["imported_name"] = json!(bot.name);
+        match action {
+            "taken" | "replaced" => r["imported_hash"] = json!(job_hash(job)),
+            "same" if stored.is_none() && !job.is_empty() => r["imported_hash"] = json!(job_hash(job)),
+            _ => {}
+        }
+        if let Some((at, size)) = &bot.brief {
+            r["imported_brief"] = json!({
+                "path": grokbot::place(at, &bot.name, &bot.key).to_string_lossy().replace('\\', "/"),
+                "kb": size / 1024,
+            });
+        }
+        // (What it has of its own stays; only an empty field is filled.)
+        for (k, v) in [("role", bot.extra["role"].clone()), ("look", bot.extra["look"].clone())] {
+            let empty = r[k].is_null() || r[k].as_str() == Some("");
+            if empty && !v.is_null() && v.as_str() != Some("") {
+                r[k] = v;
+            }
+        }
+        if r["pinned"].is_null() && !bot.extra["pinned"].is_null() {
+            r["pinned"] = bot.extra["pinned"].clone();
+        }
+        if r["hidden"].is_null() && !bot.extra["hidden"].is_null() {
+            r["hidden"] = bot.extra["hidden"].clone();
+        }
+        // (What tools it used there, in words: its instructions name them.)
+        let tools = match &bot.extra["tools"] {
+            Json::Array(a) => a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(", "),
+            Json::String(t) => t.clone(),
+            _ => String::new(),
+        };
+        if !tools.is_empty() && r["grokbot_tools"].is_null() {
+            r["grokbot_tools"] = json!(tools);
+        }
+        let note = note.or_else(|| {
+            (r["imported_name"].as_str() != Some(bot.name.as_str())).then(|| format!("It was called {} here; Grok Bot calls it {} now.", r["imported_name"].as_str().unwrap_or_default(), bot.name))
+        });
+        Decided { bot: bot.clone(), record: r, is_new, job: action, note }
+    }
+}
+
+/// A Grok Bot import: each bot in it a buddy here (or the one already here for
+/// it, added to), all it had brought along. What it made goes to its Library
+/// (`From Grok Bot/`); its memories, skills, routines and chats to
+/// `.grokbot/<kind>/<key>/`, which its instructions draw on. `only`: just those
+/// bots (by name). Routines are copied, never made into automations. The
+/// folders are read and copied off the window's thread: a bot's files can be
+/// thousands. Each bot is reported on its own: what came, what didn't and why.
 async fn import_grokbot(s: Rc<State>, root: PathBuf, only: Option<Vec<String>>) -> Result<Json, String> {
     let roots = s.grokbot_roots(&root)?;
     let plans = super::off_thread(move || roots.iter().map(|r| grokbot::plan(r)).collect::<Result<Vec<_>, String>>())
         .await
         .ok_or("The import stopped.")??;
-    // Each bot decided once, by name: a new buddy, or one here added to.
-    let mut decided: Vec<(String, Json, bool)> = Vec::new(); // (name, record, is_new)
-    let mut jobs: Vec<(Vec<grokbot::Item>, PathBuf)> = Vec::new();
-    let mut shared = 0usize;
+    let absent = plans.iter().flat_map(|p| p.absent.iter().cloned()).fold(Vec::new(), |mut all: Vec<String>, w| {
+        if !all.contains(&w) {
+            all.push(w);
+        }
+        all
+    });
+    let dropped: usize = plans.iter().map(|p| p.dropped).sum();
+    let source = plans.iter().find_map(|p| p.source.clone());
+    let mut decided: Vec<Decided> = Vec::new();
+    let mut shared_files: Vec<grokbot::Item> = Vec::new();
     for plan in &plans {
         for bot in &plan.bots {
             if only.as_ref().is_some_and(|names| !names.iter().any(|n| n.eq_ignore_ascii_case(&bot.name))) {
                 continue;
             }
-            let extra = &bot.extra;
-            let tools = match &extra["tools"] {
-                Json::Array(a) => a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(", "),
-                Json::String(t) => t.clone(),
-                _ => String::new(),
-            };
-            let at = match decided.iter().position(|(n, _, _)| n.eq_ignore_ascii_case(&bot.name)) {
-                Some(i) => i,
-                None => {
-                    let record = match s.find_imported(&bot.name) {
-                        Some(old) => {
-                            let mut r = json!({ "id": old["id"], "name": old["name"], "imported_from": format!("grokbot:{}", bot.name.to_lowercase()) });
-                            // (What it has of its own stays; only what's missing is filled.)
-                            for k in ["instructions", "role", "look"] {
-                                r[format!("_had_{k}")] = old[k].clone();
-                            }
-                            decided.push((bot.name.clone(), r, false));
-                            decided.len() - 1
-                        }
-                        None => {
-                            let r = json!({
-                                "id": new_id("b"),
-                                "name": bot.name,
-                                "role": "",
-                                "instructions": "",
-                                "permissions": "draft",
-                                "models": [],
-                                "imported_from": format!("grokbot:{}", bot.name.to_lowercase()),
-                            });
-                            decided.push((bot.name.clone(), r, true));
-                            decided.len() - 1
-                        }
-                    };
-                    record
-                }
-            };
-            let (_, r, is_new) = &mut decided[at];
-            let fill = |r: &mut Json, k: &str, v: Json| {
-                let had = if *is_new { r[k].clone() } else { r[format!("_had_{k}")].clone() };
-                let empty = match &had {
-                    Json::Null => true,
-                    Json::String(t) => t.trim().len() < if k == "instructions" { 40 } else { 1 },
-                    _ => false,
-                };
-                if empty && r.get(k).map_or(true, |c| c.is_null() || c.as_str().is_some_and(str::is_empty)) && !v.is_null() && v.as_str() != Some("") {
-                    r[k] = v;
-                }
-            };
-            fill(r, "instructions", if bot.job.is_empty() { Json::Null } else { json!(bot.job) });
-            fill(r, "role", extra["role"].clone());
-            fill(r, "look", if extra["look"].is_object() { extra["look"].clone() } else { Json::Null });
-            if *is_new {
-                for k in ["pinned", "hidden"] {
-                    if r[k].is_null() && !extra[k].is_null() {
-                        r[k] = extra[k].clone();
-                    }
-                }
+            // (One bot once, even when both sources have it: the export is read
+            // first and its words are its own.)
+            if decided.iter().any(|d| d.bot.key == bot.key || d.bot.name.eq_ignore_ascii_case(&bot.name)) {
+                continue;
             }
-            if !tools.is_empty() && r["grokbot_tools"].is_null() {
-                r["grokbot_tools"] = json!(tools);
-            }
-            let home = s.dir.join("buddies").join(r["id"].as_str().unwrap_or_default());
-            let placed = bot.files.iter().map(|i| grokbot::Item { from: i.from.clone(), to: grokbot::place(&i.to, &bot.name) }).collect();
-            jobs.push((placed, home));
+            decided.push(s.decide(bot));
         }
         if only.is_none() {
-            shared += plan.shared.len();
-            jobs.push((plan.shared.clone(), s.dir.join("grokbot-import").join("shared")));
+            shared_files.extend(plan.shared.iter().cloned());
         }
     }
-    let (files, skipped) = super::off_thread(move || {
+    let shared = shared_files.len();
+    let homes: Vec<(PathBuf, Vec<grokbot::Item>)> = decided.iter().map(|d| (s.dir.join("buddies").join(d.id()), d.placed())).collect();
+    let shared_dir = s.dir.join("grokbot-import").join("shared");
+    let (copied, shared_copy, left) = super::off_thread(move || {
         let mut budget = grokbot::MAX_TOTAL;
-        jobs.iter().fold((0, 0), |(c, k), (items, to)| {
-            let (a, b) = grokbot::copy_into(items, to, &mut budget);
-            (c + a, k + b)
-        })
+        let done: Vec<grokbot::Copied> = homes.iter().map(|(to, items)| grokbot::copy_into(items, to, &mut budget)).collect();
+        let shared = if shared_files.is_empty() { grokbot::Copied::default() } else { grokbot::copy_into(&shared_files, &shared_dir, &mut budget) };
+        (done, shared, budget)
     })
     .await
-    .unwrap_or((0, 0));
+    .ok_or("The import stopped.")?;
+    let short = copied.iter().chain(std::iter::once(&shared_copy)).flat_map(|c| c.skipped.iter()).any(|(_, why)| why == "past what one import carries");
     // The records last, so each one's instructions see what was copied.
     let (mut made, mut again) = (Vec::new(), 0usize);
-    for (name, mut r, is_new) in decided {
-        if let Some(o) = r.as_object_mut() {
-            o.retain(|k, _| !k.starts_with("_had_"));
-        }
-        if s.save_buddy(r).is_some() {
-            if is_new {
-                made.push(name);
+    let mut bots = Vec::new();
+    for (i, d) in decided.into_iter().enumerate() {
+        let done = copied.get(i).cloned().unwrap_or_default();
+        let why: Vec<Json> = done.skipped.iter().map(|(p, why)| json!({ "path": p.to_string_lossy(), "why": why })).collect();
+        let saved = s.save_buddy(d.record.clone()).is_some();
+        if saved {
+            if d.is_new {
+                made.push(d.bot.name.clone());
             } else {
                 again += 1;
             }
         }
+        bots.push(json!({
+            "id": d.id(),
+            "name": d.bot.name,
+            "key": d.bot.key,
+            "new": d.is_new,
+            "saved": saved,
+            "job": d.job,
+            "note": d.note,
+            "files": done.files,
+            "kept": done.kept,
+            "skipped": why,
+            "counts": counts(&d.bot),
+        }));
     }
-    Ok(json!({ "made": made, "again": again, "files": files, "skipped": skipped, "shared": shared }))
+    Ok(json!({
+        "made": made,
+        "again": again,
+        "files": copied.iter().map(|c| c.files).sum::<usize>() + shared_copy.files,
+        "skipped": copied.iter().map(|c| c.skipped.len()).sum::<usize>() + shared_copy.skipped.len(),
+        "shared": shared,
+        "bots": bots,
+        "absent": absent,
+        "dropped": dropped,
+        "source": source,
+        "budget_left": left,
+        "stopped_short": short,
+    }))
+}
+
+/// A buddy's history moved from the folder an older import named for what its
+/// bot was called to the folder named for its key. Renamed in Grok Bot, its
+/// memories and old chats are still its own; renamed here, nothing moved at all.
+fn settle_history(home: &Path, candidates: &[String], key: &str) {
+    let to_key = grokbot::dir_key(key);
+    for kind in grokbot::HISTORY {
+        for c in candidates {
+            if c.trim().is_empty() || *c == to_key || c.starts_with("id:") || c.starts_with("name:") || c.contains('/') || c.contains('\\') {
+                continue;
+            }
+            let from = home.join(".grokbot").join(kind).join(c);
+            let to = home.join(".grokbot").join(kind).join(&to_key);
+            if from.is_dir() && !to.exists() {
+                let _ = std::fs::create_dir_all(to.parent().unwrap_or(home));
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+    }
 }
 
 /// A buddy's folder made, with its instructions as its agent's files, its
@@ -789,33 +946,49 @@ impl State {
         Ok(roots)
     }
 
-    fn find_imported(&self, name: &str) -> Option<Json> {
-        let key = format!("grokbot:{}", name.to_lowercase());
-        let list = self.buddies.borrow();
-        let same = |b: &&Json| b["imported_from"].as_str().map(|k| k.to_lowercase() == key || k.to_lowercase().ends_with(&format!(":{}", name.to_lowercase()))).unwrap_or(false);
-        // (Else one of the same name made here: the same bot, not a second.)
-        list.iter().find(same).or_else(|| list.iter().find(|b| b["name"].as_str().map(|n| n.trim().eq_ignore_ascii_case(name)).unwrap_or(false))).cloned()
+    /// The buddy a source bot already became, by the key it is joined to: its
+    /// id where the source gives one, so a bot renamed in Grok Bot is still
+    /// the same buddy here.
+    fn find_imported(&self, key: &str) -> Option<Json> {
+        let want = format!("grokbot:{key}");
+        self.buddies.borrow().iter().find(|b| b["imported_from"].as_str().is_some_and(|k| k.eq_ignore_ascii_case(&want))).cloned()
     }
 
-    /// What an import of `root` would bring: each bot once (by name), with
-    /// its role and look, how many files, and whether a buddy has it already.
+    /// The buddy an older import made of a bot by that name (`grokbot:<name>`
+    /// or `grokbot:name:<slug>`, before a bot carried its id), for the import
+    /// to take over. Only a buddy that came from Grok Bot is ever found here:
+    /// one made in this app is never captured for sharing a name.
+    fn find_named(&self, name: &str) -> Option<Json> {
+        let plain = format!("grokbot:{}", name.trim().to_lowercase());
+        let slugged = format!("grokbot:name:{}", grokbot::slug(name));
+        self.buddies.borrow().iter().find(|b| b["imported_from"].as_str().is_some_and(|k| {
+            let k = k.to_lowercase();
+            k == plain || k == slugged
+        })).cloned()
+    }
+
+    /// What an import of `root` would bring: each bot once (by its key), with
+    /// its role and look, how much of what kind it has, and whether a buddy
+    /// has it already.
     fn grokbot_preview(&self, plans: Vec<grokbot::Plan>) -> Json {
         let mut seen: Vec<Json> = Vec::new();
         for plan in plans {
             for bot in plan.bots {
-                if let Some(old) = seen.iter_mut().find(|b| b["name"].as_str().map(|n| n.eq_ignore_ascii_case(&bot.name)).unwrap_or(false)) {
+                if let Some(old) = seen.iter_mut().find(|b| b["key"].as_str() == Some(bot.key.as_str())) {
                     old["files"] = json!(old["files"].as_u64().unwrap_or(0) + bot.files.len() as u64);
-                    if old["look"].is_null() {
-                        old["look"] = bot.extra["look"].clone();
-                    }
                     continue;
                 }
+                let from = format!("grokbot:{}", bot.key);
+                let exists = self.find_imported(&from).is_some() || self.find_named(&bot.name).is_some();
                 seen.push(json!({
                     "name": bot.name,
+                    "key": bot.key,
                     "role": bot.extra["role"],
                     "look": bot.extra["look"],
                     "files": bot.files.len(),
-                    "exists": self.find_imported(&bot.name).is_some(),
+                    "counts": counts(&bot),
+                    "job": !bot.job.is_empty() || bot.brief.is_some(),
+                    "exists": exists,
                 }));
             }
         }
@@ -1203,6 +1376,51 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             })
         }
     });
+    // `kx.buddy.memory(id)`: what it knows, for the drawer's Knowledge tab:
+    // its own `MEMORY.md` and the `ABOUT-YOU.md` every buddy shares.
+    let memory_state = state.clone();
+    host.async_action("kx.buddy.memory", move |id| {
+        let id = crate::auth::text(&id);
+        let s = memory_state.clone();
+        async move {
+            let Some(home) = plain(&id).then(|| s.dir.join("buddies").join(&id)) else { return Err("That isn't a buddy.".to_owned()) };
+            let about = s.dir.join("buddies").join(ABOUT_YOU);
+            // (Words off this thread: a script Value cannot cross.)
+            let (memory, shared) = super::off_thread(move || {
+                let read = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+                (read(home.join(MEMORY)), read(about))
+            })
+            .await
+            .unwrap_or_default();
+            Ok(crate::kx::to_value(&json!({ "memory": memory, "about": shared })))
+        }
+    });
+    // `kx.buddy.set_memory({ id, which, text })`: the person's own edit of what
+    // it knows (`which`: "mine" or "about"), written whole, never appended.
+    let memory_write = state.clone();
+    host.async_action("kx.buddy.set_memory", move |req| {
+        let req = crate::kx::widgets::value_json(&req);
+        let s = memory_write.clone();
+        // (Only words cross to the other thread: a Value cannot.)
+        let id = req["id"].as_str().unwrap_or_default().to_owned();
+        let about = req["which"].as_str() == Some("about");
+        let text: String = req["text"].as_str().unwrap_or_default().chars().take(64 * 1024).collect();
+        async move {
+            if !plain(&id) {
+                return Err("That isn't a buddy.".to_owned());
+            }
+            let path = if about { s.dir.join("buddies").join(ABOUT_YOU) } else { s.dir.join("buddies").join(&id).join(MEMORY) };
+            super::off_thread(move || {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                std::fs::write(&path, text).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|| Err("It couldn't be written.".to_owned()))?;
+            Ok(Value::Nil)
+        }
+    });
     // `kx.buddy.picture(id)`: a picture the person picks (PNG, JPEG or WebP,
     // at most 25 MB) copied into the buddy's folder as its face: its path, or
     // nil when they cancel. (Hidden from its Library by the leading dot.)
@@ -1516,6 +1734,105 @@ mod tests {
         assert!(text.contains("You are Mina") && text.contains("Look things up.") && text.contains("Ask before every action"));
         assert_eq!(text, std::fs::read_to_string(home.join("CLAUDE.md")).unwrap());
         assert!(plain("b1a2") && !plain("../x") && !plain(""));
+    }
+
+    fn empty(dir: &tempfile::TempDir, buddies: Vec<Json>) -> State {
+        State {
+            dir: dir.path().to_path_buf(),
+            buddies: RefCell::new(buddies),
+            automations: RefCell::new(Vec::new()),
+            runs: RefCell::new(Vec::new()),
+            due: RefCell::new(Vec::new()),
+            shared: RefCell::new(None),
+        }
+    }
+
+    fn bot(name: &str, id: Option<&str>, job: &str) -> grokbot::Bot {
+        grokbot::Bot {
+            name: name.to_owned(),
+            key: grokbot::key_of(id, name),
+            id: id.map(str::to_owned),
+            job: job.to_owned(),
+            brief: None,
+            files: Vec::new(),
+            extra: json!({ "role": "Tutor" }),
+        }
+    }
+
+    #[test]
+    fn an_older_import_learns_its_id_and_its_history_moves_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // From before a bot carried its id: keyed by the name it had then.
+        let state = empty(&dir, vec![json!({
+            "id": "b1",
+            "name": "VCE Help",
+            "instructions": "Old words",
+            "imported_from": "grokbot:name:vce-help",
+            "imported_hash": job_hash("Old words"),
+        })]);
+        let home = dir.path().join("buddies").join("b1");
+        std::fs::create_dir_all(home.join(".grokbot").join("memories").join("name-vce-help")).unwrap();
+        std::fs::write(home.join(".grokbot/memories/name-vce-help/about.md"), "remembers").unwrap();
+        // Imported again under the same name: now the source says its id, so
+        // the record learns it and its memories move to the folder named for it.
+        let d = state.decide(&bot("VCE Help", Some("a1"), "Old words"));
+        assert!(!d.is_new);
+        assert_eq!(d.record["id"], json!("b1"));
+        assert_eq!(d.record["imported_from"], json!("grokbot:id:a1"));
+        assert_eq!(d.job, "same");
+        assert!(home.join(".grokbot/memories/id-a1/about.md").is_file());
+        // Renamed in Grok Bot after that, it is still the same buddy: by id.
+        let after = empty(&dir, vec![d.record]);
+        let renamed = after.decide(&bot("VCE Notes", Some("a1"), "New words"));
+        assert!(!renamed.is_new);
+        assert_eq!(renamed.record["id"], json!("b1"));
+        assert_eq!(renamed.job, "replaced");
+        assert_eq!(renamed.record["instructions"], json!("New words"));
+        assert_eq!(renamed.record["imported_name"], json!("VCE Notes"));
+    }
+
+    #[test]
+    fn a_buddy_made_here_is_never_taken_over_for_sharing_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = empty(&dir, vec![json!({ "id": "b9", "name": "Mina", "instructions": "I made her" })]);
+        let d = state.decide(&bot("Mina", Some("a1"), "From Grok"));
+        assert!(d.is_new);
+        assert_eq!(d.record["instructions"], json!("From Grok"));
+        assert_eq!(d.record["name"], json!("Mina (Grok Bot)"));
+        // (And the one made here is untouched.)
+        assert_eq!(state.buddies.borrow()[0]["instructions"], json!("I made her"));
+    }
+
+    #[test]
+    fn a_job_written_here_survives_a_change_in_grok_bot_and_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = empty(&dir, vec![json!({
+            "id": "b1",
+            "name": "Mina",
+            "instructions": "Mine, not Grok's",
+            "imported_from": "grokbot:id:a1",
+            "imported_hash": job_hash("Grok's first words"),
+        })]);
+        let d = state.decide(&bot("Mina", Some("a1"), "Grok's second words"));
+        assert_eq!(d.job, "kept");
+        assert_eq!(d.record["instructions"], json!("Mine, not Grok's"));
+        assert!(d.note.is_some());
+        // (The same source again changes nothing, and is not reported as kept.)
+        let after = empty(&dir, vec![d.record]);
+        let same = after.decide(&bot("Mina", Some("a1"), "Grok's second words"));
+        assert_eq!(same.job, "kept");
+    }
+
+    #[test]
+    fn a_job_a_brief_file_stands_in_for_is_pointed_at_where_it_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = empty(&dir, Vec::new());
+        let mut b = bot("Mina", Some("a1"), "");
+        b.brief = Some((std::path::PathBuf::from("profile/Mina.md"), 96 * 1024));
+        let d = state.decide(&b);
+        assert_eq!(d.job, "same");
+        assert_eq!(d.record["imported_brief"]["path"], json!(".grokbot/profile/Mina.md"));
+        assert_eq!(d.record["imported_brief"]["kb"], json!(96));
     }
 
     #[test]
