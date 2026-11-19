@@ -1,7 +1,14 @@
 --!strict
--- A compact Grok-Bot-style header strip shown at the top of a buddy's chat,
--- keeping its avatar, role, live standing, and one-click jumps to Profile,
--- Computer/Desktop, Automations, and Activity right beside the conversation.
+-- A buddy's chat: the pill over it and the drawer beside it.
+--
+-- The pill is its face and name, the two places its drawer opens from, and
+-- its Share (a template file) and desktop. The drawer is the only place a
+-- buddy is seen and set up: three tabs, and its settings behind the gear.
+--
+--   Bar(session_id)      the pill over its chat
+--   Drawer(session_id)   the column beside it: Roster, Thread, Knowledge,
+--                        and Settings behind the gear (kx/buddies/drawer
+--                        draws each of them)
 
 local ds = require("@ds")
 local Icon = require("@ds/icon")
@@ -38,12 +45,11 @@ local function standing_color(b: store.Buddy): string
 	return "$text.tertiary"
 end
 
--- To one part of its settings, in its drawer.
+-- To one of its tabs, in its drawer.
 local function jump(buddy_id: string, tab_id: string)
 	store.selected:set(buddy_id)
-	store.page_tab:set(tab_id)
 	store.inspector_open:set(true)
-	store.inspector_tab:set("settings")
+	store.inspector_tab:set(tab_id)
 end
 
 -- A hairline under the bar that runs while it works, in its colour.
@@ -202,14 +208,12 @@ end
 --
 --   Drawer(session_id)   a column at the chat's right, while its chat shows
 --                        and store.inspector_open holds: its face (pressed,
---                        its shape and colour to choose), name and role, and
---                        two tabs: Activity (a routine to make, its computer,
---                        its agent, its routines) and Library (what's in its
---                        folder, newest first, each opened in the panel).
+--                        its shape and colour to choose), its name and role,
+--                        three tabs, and its settings behind the gear.
 
 -- Its width: wider while it shows its settings, which have forms.
 local function width(): number
-	return if store.inspector_tab:get() == "settings" then 420 else 304
+	return if store.inspector_tab:get() == "settings" then 420 else 340
 end
 
 local function ago(t: number?): string
@@ -257,205 +261,6 @@ local function card(props: { [any]: any }): Node
 	end
 	return ui.column(box)
 end
-
--- One fact about it, as a quiet row: what it is, and its value; a press
--- goes where it's changed.
-local function fact(lead: Node, label: string, value: () -> string, on_click: () -> ()): Node
-	return ui.button {
-		label = label,
-		w_full = true,
-		h = 36,
-		px = "$space.2",
-		gap = "$space.3",
-		items = "center",
-		rounded = "$radius.md",
-		bg = "#00000000",
-		hover = { bg = "$hover" },
-		on_click = on_click,
-		ui.div { w = 16, shrink = 0, items = "center", justify = "center", lead },
-		ui.text { label, literal = true, w = 68, shrink = 0, color = "$text.tertiary", text_size = "$font.size.sm" },
-		ui.text { value, literal = true, grow = 1, truncate = true, color = "$text.primary", text_size = "$font.size.sm" },
-	}
-end
-
-local function activity(buddy: store.Buddy): Node
-	local kind = buddy.computer and buddy.computer.kind or "none"
-	local function routines(): { any }
-		local out = {}
-		for _, a in store.automations:get() or {} do
-			if a.buddy == buddy.id then
-				table.insert(out, a)
-			end
-		end
-		return out
-	end
-	local function awake(): boolean
-		if kind == "local" then
-			local c = store.computer_of(buddy)
-			return c ~= nil and (c.status == "running" or c.status == "ready")
-		elseif kind == "boat" then
-			local b = store.boat_of(buddy)
-			return b ~= nil and (b.state == "running" or b.state == "ready")
-		end
-		return false
-	end
-	if kind == "local" and not store.computers_read:peek() then
-		store.read_computers()
-	end
-	local primary = store.primary_agent(buddy)
-	return ui.column {
-		w_full = true,
-		gap = "$zeron.space.hair",
-		fact(Icon { name = "monitor", size = 15, color = "$text.tertiary" }, "Desktop", function(): string
-			if kind == "none" then
-				return "None"
-			end
-			return `{if kind == "boat" then "Cloud" else "This PC"}, {if awake() then "awake" else "asleep"}`
-		end, function()
-			if kind == "none" then
-				jump(buddy.id, "computer")
-			else
-				store.open_desktop(buddy, function(ok: boolean, why: string?)
-					if not ok then
-						ds.toast.show { title = "Its desktop couldn't be shown", body = why, tone = "danger" }
-					end
-				end)
-			end
-		end),
-		fact(
-			if primary and primary.mark
-				then ds.AgentMark { label = primary.label, seed = primary.harness, mark = primary.mark, size = 14, bare = true }
-				else Icon { name = "tuning", size = 15, color = "$text.tertiary" },
-			"Runs on",
-			function(): string
-				return if primary then `{primary.label}{if primary.model then " · " .. primary.model else ""}` else "Nothing yet"
-			end,
-			function()
-				jump(buddy.id, "profile")
-			end
-		),
-		fact(Icon { name = "clock-circle", size = 15, color = "$text.tertiary" }, "Routines", function(): string
-			local n = #routines()
-			return if n == 0 then "None" else tostring(n)
-		end, function()
-			jump(buddy.id, "automations")
-		end),
-		ui.each(ui.computed(function(): { any }
-			return routines()
-		end), function(a: any): Node
-			return ui.row {
-				w_full = true,
-				h = 28,
-				pl = ui.raw(38, "under the facts' values"),
-				pr = "$space.2",
-				gap = "$space.2",
-				items = "center",
-				ui.text { a.title or a.prompt, literal = true, grow = 1, truncate = true, color = if a.enabled == false then "$text.tertiary" else "$text.secondary", text_size = "$font.size.sm" },
-				ui.text { if a.enabled == false then "Off" else upcoming(a.next), literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
-			}
-		end, {
-			w_full = true,
-			key = function(a: any): string
-				return `{a.id}:{a.title or ""}:{tostring(a.enabled)}:{a.next or 0}`
-			end,
-		}),
-	}
-end
-
-local Library = ui.component(function(props: { buddy: store.Buddy }): Node
-	local buddy = props.buddy
-	local files = ui.use_state(nil :: { any }?)
-	ui.call("kx.buddy.files", buddy.id):after(function(list: any)
-		files:set(if type(list) == "table" then list else {})
-	end, function()
-		files:set({})
-	end)
-	local function open(f: any)
-		store.ensure_chat(buddy, function(chat: string?)
-			if not chat then
-				return
-			end
-			local ok, panel = pcall(function(): any
-				return (require :: any)("@app/screens/panel")
-			end)
-			if ok and panel and panel.open_file then
-				panel.open_file(chat, f.path)
-			else
-				pcall(ui.invoke, "kx.artifacts.open", f.full)
-			end
-		end)
-	end
-	return ui.column {
-		w_full = true,
-		gap = "$space.2",
-		ui.show(function(): boolean
-			return files:get() == nil
-		end, ui.column { w_full = true, ds.SkeletonRow { lead = 28, title = 120, line = 80 }, ds.SkeletonRow { lead = 28, title = 150, line = 70 }, ds.SkeletonRow { lead = 28, title = 100, line = 90 } }),
-		ui.show(function(): boolean
-			local f = files:get()
-			return f ~= nil and #f == 0
-		end, ui.text { "Nothing yet. What it writes in its folder shows here.", literal = true, wrap = true, px = "$space.1", color = "$text.tertiary", text_size = "$font.size.xs" }),
-		ui.presence(function(): string
-			local f = files:get()
-			return if f and f[1] then f[1].path .. ":" .. tostring(f[1].modified) else ""
-		end, function(key: string): Node
-			local f = files:peek()
-			if key == "" or not f then
-				return ui.div {}
-			end
-			local first = f[1]
-			return ui.button {
-				label = first.title,
-				w_full = true,
-				p = "$space.3",
-				gap = "$space.1",
-				direction = "column",
-				items = "start",
-				rounded = "$radius.lg",
-				bg = "$zeron.secondary.bg",
-				hover = { bg = "$zeron.secondary.hover" },
-				on_click = function()
-					open(first)
-				end,
-				ui.text { "Latest", literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
-				ui.text { first.title, literal = true, w_full = true, wrap = true, color = "$text.primary", text_size = "$font.size.sm", weight = "$font.weight.semibold" },
-				ui.row {
-					gap = "$space.1",
-					items = "center",
-					Avatar { look = buddy.look, seed = buddy.id, size = 14 },
-					ui.text { `{buddy.name} · {ago(first.modified)}`, literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
-				},
-			}
-		end, { w_full = true }),
-		ui.each(ui.computed(function(): { any }
-			return files:get() or {}
-		end), function(f: any): Node
-			return ui.button {
-				label = f.title,
-				w_full = true,
-				h = 36,
-				px = "$space.2",
-				gap = "$space.2",
-				items = "center",
-				rounded = "$radius.md",
-				bg = "#00000000",
-				hover = { bg = "$hover" },
-				on_click = function()
-					open(f)
-				end,
-				Icon { name = "document", size = 14, color = "$text.secondary" },
-				ui.text { f.title, literal = true, grow = 1, truncate = true, color = "$text.primary", text_size = "$font.size.sm" },
-				ui.text { ago(f.modified), literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
-			}
-		end, {
-			w_full = true,
-			gap = 0,
-			key = function(f: any): string
-				return `{f.path}:{f.modified}`
-			end,
-		}),
-	}
-end)
 
 local Inside = ui.component(function(props: { id: string }): Node
 	local picking = ui.use_state(false)
@@ -540,11 +345,30 @@ local Inside = ui.component(function(props: { id: string }): Node
 		ui.row {
 			w_full = true,
 			shrink = 0,
-			justify = "center",
+			items = "center",
 			gap = "$space.1",
-			tab_button("activity", "Activity"),
-			tab_button("library", "Library"),
-			tab_button("settings", "Settings"),
+			ui.row {
+				grow = 1,
+				gap = "$space.1",
+				tab_button("roster", "Roster"),
+				tab_button("thread", "Thread"),
+				tab_button("knowledge", "Knowledge"),
+			},
+			-- (Its settings, one press away and put away again, as in Grok
+			-- Bot: the tabs above are what it is and does, this is how it is
+			-- set up.)
+			ds.IconButton {
+				icon = "settings" :: any,
+				label = "Its settings",
+				size = "sm",
+				tone = "quiet",
+				lit = function(): boolean
+					return store.inspector_tab:get() == "settings"
+				end,
+				on_click = function()
+					store.inspector_tab:set(if store.inspector_tab:peek() == "settings" then "thread" else "settings")
+				end,
+			},
 		},
 		ui.scroll {
 			w_full = true,
@@ -553,14 +377,16 @@ local Inside = ui.component(function(props: { id: string }): Node
 			ui.presence(function(): string
 				return store.inspector_tab:get()
 			end, function(which: string): Node
-				if which == "library" then
-					return Library { buddy = buddy }
+				-- (Each tab is built when it is first opened, never before.)
+				local drawer: any = (require :: any)("@app/kx/buddies/drawer")
+				if which == "roster" then
+					return drawer.Roster()
+				elseif which == "knowledge" then
+					return drawer.Knowledge(buddy)
 				elseif which == "settings" then
-					-- (Its settings, as the buddy's page had them: loaded when
-					-- first asked for.)
-					return (require :: any)("@app/kx/buddies/page").Settings(buddy)
+					return drawer.Settings(buddy)
 				end
-				return activity(buddy)
+				return drawer.Thread(buddy)
 			end, { w_full = true }),
 		},
 	}

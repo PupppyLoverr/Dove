@@ -1,14 +1,20 @@
 --!strict
--- The Buddies space's pages (under the `kx` plugin name, ui/kx/pages):
+-- The Buddies drawer: the one place a buddy is seen and set up. There is no
+-- page of its own any more (Grok Bot has none for its bots either): its drawer
+-- sits beside its chat, in three tabs and its settings.
 --
---   page.board()   every buddy on a card (what it is, how it stands), the
---                  starter templates to make one from, and the last runs
---   page.buddy()   the one selected (store.selected): Profile (who it is,
---                  what it runs on, what it may do), Automations (what it's
---                  sent by the clock) and Activity (its runs)
+--   M.Roster()         every buddy, how it stands, and how to get another
+--                      (made here, from a template, or across from Grok Bot)
+--   M.Thread(b)        what it has done (its runs, newest first) and what will
+--                      set it to work (its routines)
+--   M.Knowledge(b)     what it knows: its own memory, the one every buddy
+--                      shares, its skills, and what a Grok Bot import brought
+--   M.Settings(b)      who it is, what it runs on, its computer, its folder
+--   M.Start()          where Buddies opens with none chosen: the templates to
+--                      start from and the ways to bring a bot across
 --
--- A buddy's conversation is its chat on the engine, shown by the chat page
--- as any chat is: "Open chat" goes there, and the sidebar stays the buddies'.
+-- A buddy's conversation is its chat on the engine, shown by the chat page as
+-- any chat is; the drawer is the frame around it (kx/buddies/chat_bar).
 
 local ds = require("@ds")
 local Icon = require("@ds/icon")
@@ -52,7 +58,7 @@ local function standing_color(b: store.Buddy): string
 	return "$text.tertiary"
 end
 
-local function go_board()
+local function go_start()
 	store.selected:set(nil)
 	route.plugin_page(M.PLUGIN, "buddies")
 end
@@ -60,7 +66,6 @@ end
 -- its settings. (Just made, it may not be listed yet: a moment later.)
 local function go_buddy(id: string)
 	store.selected:set(id)
-	store.page_tab:set("profile")
 	ui.after(100, function()
 		local b = store.by_id(id)
 		if b then
@@ -97,6 +102,24 @@ local function create(t: templates.Template?)
 	end, function(why: any)
 		ds.toast.show { title = "The buddy couldn't be made", body = tostring(why), tone = "danger" }
 	end)
+end
+
+-- How long ago, in words: a file it wrote, a run it had.
+local function ago(t: number?): string
+	if not t or t <= 0 then
+		return ""
+	end
+	local d = os.time() - t
+	if d < 60 then
+		return "Just now"
+	elseif d < 3600 then
+		return `{d // 60}m ago`
+	elseif d < 86400 then
+		return `{d // 3600}h ago`
+	elseif d < 86400 * 7 then
+		return `{d // 86400}d ago`
+	end
+	return os.date("%d %b", t) :: any
 end
 
 local function heading(title: string, about: string?): Node
@@ -338,18 +361,81 @@ local function runs_list(of: () -> { store.Run }, none: string): Node
 	}
 end
 
+-- One buddy in the drawer's roster: its face, its name, and what it is doing
+-- now. A press opens its chat beside the drawer.
+local function roster_row(b: store.Buddy): Node
+	local on = function(): boolean
+		return store.selected:get() == b.id
+	end
+	return ui.button {
+		label = b.name,
+		w_full = true,
+		h = 34,
+		shrink = 0,
+		px = "$space.2",
+		gap = "$space.2",
+		items = "center",
+		rounded = "$radius.md",
+		bg = function(): string
+			return if on() then "$zeron.selected.flat.bg" else "#00000000"
+		end,
+		hover = { bg = "$hover" },
+		on_click = function()
+			store.open(b)
+		end,
+		Avatar {
+			look = b.look,
+			seed = b.id,
+			size = 22,
+			live = true,
+			standing = function(): string?
+				return store.standing(b)
+			end,
+		},
+		ui.text { b.name, literal = true, grow = 1, truncate = true, color = "$text.primary", text_size = "$font.size.sm", weight = if b.unread then "$font.weight.semibold" else "$font.weight.medium" },
+		ui.text {
+			function(): string
+				return standing_words(b)
+			end,
+			literal = true,
+			shrink = 0,
+			color = function(): string
+				return standing_color(b)
+			end,
+			text_size = "$font.size.xxs",
+		},
+	}
+end
+
 -- Bringing bots across from Grok Bot: where from (Grok Bot on this PC, or a
--- backup folder), then which of its bots, all ticked; each brought with its
--- history (src/kx/grokbot.rs). One here already by name gets what's new
--- added to it.
+-- backup folder), then which of its bots, all ticked. Each is joined to what
+-- is here already by its own id, never by the name it happens to have today,
+-- and the result says per bot what came and what could not (src/kx/grokbot.rs).
 local import_open = ui.state("kx_grokbot_import_open", false)
 local import_from = ui.state("kx_grokbot_import_from", nil :: string?)
+
+-- A bot from Grok Bot counted out: "4 conversations, 3 memories".
+local function counted(c: any): string
+	local parts: { string } = {}
+	for _, k in { "conversations", "memories", "skills", "routines", "files" } do
+		local n = if type(c) == "table" then (c[k] or 0) else 0
+		if n > 0 then
+			table.insert(parts, `{n} {k}`)
+		end
+	end
+	if #parts == 0 then
+		return "nothing but its job"
+	end
+	return table.concat(parts, ", ")
+end
 
 local GrokImport = ui.component(function(): Node
 	local bots = ui.use_state(nil :: { any }?)
 	local ticked = ui.use_state({} :: { [string]: boolean })
 	local busy = ui.use_state(false)
 	local failed = ui.use_state(nil :: string?)
+	-- (What the import did, bot by bot: the picker gives way to the result.)
+	local done = ui.use_state(nil :: any)
 	ui.effect(function()
 		local from = import_from:get()
 		if not from then
@@ -357,11 +443,12 @@ local GrokImport = ui.component(function(): Node
 		end
 		bots:set(nil)
 		failed:set(nil)
+		done:set(nil)
 		ui.call("kx.grokbot.preview", { path = from }):after(function(list: any)
 			local all = if type(list) == "table" then list else {}
 			local on: { [string]: boolean } = {}
 			for _, b in all do
-				on[b.name] = true
+				on[b.key or b.name] = true
 			end
 			ticked:set(on)
 			bots:set(all)
@@ -373,7 +460,7 @@ local GrokImport = ui.component(function(): Node
 	local function chosen(): { string }
 		local out = {}
 		for _, b in bots:get() or {} do
-			if ticked:get()[b.name] then
+			if ticked:get()[b.key or b.name] then
 				table.insert(out, b.name)
 			end
 		end
@@ -389,20 +476,91 @@ local GrokImport = ui.component(function(): Node
 		local everyone = #names == #(bots:peek() or {})
 		ui.call("kx.grokbot.import", { path = from, names = if everyone then nil else names }):after(function(res: any)
 			busy:set(false)
-			import_open:set(false)
-			local made, again = #(res.made or {}), res.again or 0
-			local body = `{res.files or 0} files copied`
-			if again > 0 then
-				body ..= `, {again} added to ones already here`
-			end
-			if (res.skipped or 0) > 0 then
-				body ..= `, {res.skipped} left out (too big)`
-			end
-			ds.toast.show { title = `Brought across {made + again} from Grok Bot`, body = body, tone = "success" }
+			done:set(if type(res) == "table" then res else { bots = {} })
+			local n = #((if type(res) == "table" then res.bots else nil) or {})
+			ds.toast.show {
+				title = if n == 1 then "Brought 1 bot across" else `Brought {n} bots across`,
+				body = `{if type(res) == "table" then res.files or 0 else 0} files copied into their folders.`,
+				tone = "success",
+			}
 		end, function(why: any)
 			busy:set(false)
 			ds.toast.show { title = "The import didn't finish", body = tostring(why), tone = "danger" }
 		end)
+	end
+	-- One bot's result: what came, what didn't and why.
+	local function result(b: any): Node
+		local lines: { any } = {}
+		local what = counted(b.counts)
+		table.insert(lines, ui.text { what, literal = true, wrap = true, color = "$text.secondary", text_size = "$font.size.xs" })
+		if b.job == "replaced" then
+			table.insert(lines, ui.text { "Its job was replaced with the one in Grok Bot.", literal = true, wrap = true, color = "$text.tertiary", text_size = "$font.size.xxs" })
+		elseif b.job == "kept" then
+			table.insert(lines, ui.text { "Its job here was kept: Grok Bot's has changed, and its own words are in the bot's folder.", literal = true, wrap = true, color = "$warning", text_size = "$font.size.xxs" })
+		end
+		if b.note then
+			table.insert(lines, ui.text { b.note, literal = true, wrap = true, color = "$text.tertiary", text_size = "$font.size.xxs" })
+		end
+		for _, s in b.skipped or {} do
+			table.insert(lines, ui.text {
+				`Left out {s.path}: {s.why}`,
+				literal = true,
+				wrap = true,
+				color = "$danger",
+				text_size = "$font.size.xxs",
+			})
+		end
+		return ui.column {
+			w_full = true,
+			gap = 2,
+			py = "$space.1",
+			ui.row {
+				gap = "$space.2",
+				items = "center",
+				ui.text { b.name, literal = true, grow = 1, truncate = true, color = "$text.primary", text_size = "$font.size.sm", weight = "$font.weight.medium" },
+				ui.text {
+					if b.new then "added" else "added to",
+					literal = true,
+					color = "$text.tertiary",
+					text_size = "$font.size.xxs",
+				},
+			},
+			ui.column { w_full = true, gap = 0, pl = "$space.1", lines },
+		}
+	end
+	local function results(res: any): Node
+		local rows: { any } = {}
+		for _, b in res.bots or {} do
+			table.insert(rows, result(b))
+		end
+		return ui.column {
+			w_full = true,
+			gap = "$space.2",
+			ui.column { w_full = true, gap = "$space.2", ui.each(rows, function(n: any): Node
+				return n
+			end, { w_full = true }) },
+			ui.show(function(): boolean
+				return res.absent ~= nil and #res.absent > 0
+			end, ds.Banner {
+				tone = "warning",
+				title = "Not everything can come across",
+				body = function(): string
+					return `{res.source or "That source"} carries no {table.concat(res.absent or {}, ", ")}. A backup folder a bot exports itself carries everything.`
+				end,
+			}),
+			ui.show(function(): boolean
+				return (res.dropped or 0) > 0
+			end, ui.text {
+				`{(res.dropped or 0)} transcript entries couldn't be read and were left out (a kind this import doesn't know).`,
+				literal = true,
+				wrap = true,
+				color = "$text.tertiary",
+				text_size = "$font.size.xs",
+			}),
+			ui.show(function(): boolean
+				return res.stopped_short == true
+			end, ui.text { "It stopped at what one import carries. Import again to carry the rest: what is here already is not copied twice.", literal = true, wrap = true, color = "$warning", text_size = "$font.size.xs" }),
+		}
 	end
 	return ds.Dialog {
 		open = import_open,
@@ -410,127 +568,147 @@ local GrokImport = ui.component(function(): Node
 		size = "md",
 		confirm = {
 			label = function(): string
+				if done:get() ~= nil then
+					return "Done"
+				end
 				local n = #chosen()
 				return if n == 1 then "Import 1 bot" else `Import {n} bots`
 			end,
-			keep_open = true,
+			keep_open = function(): boolean
+				return done:get() == nil
+			end,
 			busy = function(): boolean
 				return busy:get()
 			end,
-			on_click = run,
+			on_click = function()
+				if done:peek() ~= nil then
+					done:set(nil)
+					import_open:set(false)
+					return
+				end
+				run()
+			end,
 		},
-		ui.column {
-			w_full = true,
-			gap = "$space.2",
-			ui.show(function(): boolean
-				return bots:get() == nil
-			end, ui.column { w_full = true, ds.SkeletonRow { lead = 32, title = 120, line = 80 }, ds.SkeletonRow { lead = 32, title = 150, line = 60 }, ds.SkeletonRow { lead = 32, title = 100, line = 90 } }),
-			ui.show(function(): boolean
-				return failed:get() ~= nil
-			end, ui.text {
-				function(): string
-					return failed:get() or ""
-				end,
-				literal = true,
-				wrap = true,
-				color = "$danger",
-				text_size = "$font.size.sm",
-			}),
-			ui.show(function(): boolean
-				local b = bots:get()
-				return b ~= nil and #b == 0 and failed:get() == nil
-			end, ui.text { "No bots were found there.", literal = true, color = "$text.tertiary", text_size = "$font.size.sm" }),
-			ui.show(function(): boolean
-				local b = bots:get()
-				return b ~= nil and #b > 1
-			end, ui.row {
+		ui.presence(function(): string
+			return if done:get() ~= nil then "done" else "pick"
+		end, function(which: string): Node
+			if which == "done" then
+				return results(done:peek() or {})
+			end
+			return ui.column {
 				w_full = true,
-				justify = "end",
-				ui.button {
-					label = "Select all or none",
-					h = 24,
-					px = "$space.2",
-					rounded = "$radius.md",
-					bg = "#00000000",
-					hover = { bg = "$hover" },
-					on_click = function()
-						local all = #chosen() < #(bots:peek() or {})
-						local on: { [string]: boolean } = {}
-						for _, b in bots:peek() or {} do
-							on[b.name] = all
-						end
-						ticked:set(on)
+				gap = "$space.2",
+				ui.show(function(): boolean
+					return bots:get() == nil
+				end, ui.column { w_full = true, ds.SkeletonRow { lead = 32, title = 120, line = 80 }, ds.SkeletonRow { lead = 32, title = 150, line = 60 }, ds.SkeletonRow { lead = 32, title = 100, line = 90 } }),
+				ui.show(function(): boolean
+					return failed:get() ~= nil
+				end, ui.text {
+					function(): string
+						return failed:get() or ""
 					end,
-					ui.text {
-						function(): string
-							return if #chosen() < #(bots:get() or {}) then "Select all" else "Select none"
-						end,
-						literal = true,
-						color = "$text.secondary",
-						text_size = "$font.size.xs",
-					},
-				},
-			}),
-			ui.scroll {
-				w_full = true,
-				max_h = 360,
-				ui.each(ui.computed(function(): { any }
-					return bots:get() or {}
-				end), function(b: any): Node
-					local function on(): boolean
-						return ticked:get()[b.name] == true
-					end
-					return ui.button {
-						label = b.name,
-						w_full = true,
-						h = 48,
+					literal = true,
+					wrap = true,
+					color = "$danger",
+					text_size = "$font.size.sm",
+				}),
+				ui.show(function(): boolean
+					local b = bots:get()
+					return b ~= nil and #b == 0 and failed:get() == nil
+				end, ui.text { "No bots were found there.", literal = true, color = "$text.tertiary", text_size = "$font.size.sm" }),
+				ui.show(function(): boolean
+					local b = bots:get()
+					return b ~= nil and #b > 1
+				end, ui.row {
+					w_full = true,
+					justify = "end",
+					ui.button {
+						label = "Select all or none",
+						h = 24,
 						px = "$space.2",
-						gap = "$space.3",
-						items = "center",
-						rounded = "$radius.lg",
+						rounded = "$radius.md",
 						bg = "#00000000",
 						hover = { bg = "$hover" },
 						on_click = function()
-							local now = table.clone(ticked:peek())
-							now[b.name] = not now[b.name]
-							ticked:set(now)
+							local all = #chosen() < #(bots:peek() or {})
+							local on: { [string]: boolean } = {}
+							for _, b in bots:peek() or {} do
+								on[b.key or b.name] = all
+							end
+							ticked:set(on)
 						end,
-						ui.div {
-							w = 16,
-							h = 16,
-							shrink = 0,
-							rounded = "$radius.sm",
-							border = 2,
-							border_color = function(): string
-								return if on() then "$accent" else "$text.tertiary"
+						ui.text {
+							function(): string
+								return if #chosen() < #(bots:get() or {}) then "Select all" else "Select none"
 							end,
-							bg = function(): string
-								return if on() then "$accent" else "#00000000"
-							end,
+							literal = true,
+							color = "$text.secondary",
+							text_size = "$font.size.xs",
 						},
-						Avatar { look = b.look, seed = b.name, size = 30 },
-						ui.column {
-							grow = 1,
-							min_w = 0,
-							gap = 0,
-							ui.text { b.name, literal = true, truncate = true, color = "$text.primary", text_size = "$font.size.md", weight = "$font.weight.medium" },
-							ui.text {
-								`{if b.role and b.role ~= "" then b.role .. " · " else ""}{b.files or 0} files{if b.exists then " · adds to the one here" else ""}`,
-								literal = true,
-								truncate = true,
-								color = "$text.tertiary",
-								text_size = "$font.size.xs",
-							},
-						},
-					}
-				end, {
-					w_full = true,
-					key = function(b: any): string
-						return b.name
-					end,
+					},
 				}),
-			},
-		},
+				ui.scroll {
+					w_full = true,
+					max_h = 360,
+					ui.each(ui.computed(function(): { any }
+						return bots:get() or {}
+					end), function(b: any): Node
+						local key = b.key or b.name
+						local function on(): boolean
+							return ticked:get()[key] == true
+						end
+						return ui.button {
+							label = b.name,
+							w_full = true,
+							h = 48,
+							px = "$space.2",
+							gap = "$space.3",
+							items = "center",
+							rounded = "$radius.lg",
+							bg = "#00000000",
+							hover = { bg = "$hover" },
+							on_click = function()
+								local now = table.clone(ticked:peek())
+								now[key] = not now[key]
+								ticked:set(now)
+							end,
+							ui.div {
+								w = 16,
+								h = 16,
+								shrink = 0,
+								rounded = "$radius.sm",
+								border = 2,
+								border_color = function(): string
+									return if on() then "$accent" else "$text.tertiary"
+								end,
+								bg = function(): string
+									return if on() then "$accent" else "#00000000"
+								end,
+							},
+							Avatar { look = b.look, seed = key, size = 30 },
+							ui.column {
+								grow = 1,
+								min_w = 0,
+								gap = 0,
+								ui.text { b.name, literal = true, truncate = true, color = "$text.primary", text_size = "$font.size.md", weight = "$font.weight.medium" },
+								ui.text {
+									`{if b.role and b.role ~= "" then b.role .. " · " else ""}{counted(b.counts)}{if b.exists then " · adds to the one here" else ""}`,
+									literal = true,
+									truncate = true,
+									color = "$text.tertiary",
+									text_size = "$font.size.xs",
+								},
+							},
+						}
+					end, {
+						w_full = true,
+						key = function(b: any): string
+							return b.key or b.name
+						end,
+					}),
+				},
+			}
+		end, { w_full = true }),
 	}
 end)
 
@@ -560,10 +738,10 @@ local function import_template()
 	end)
 end
 
--- Where Buddies starts with none chosen: the buddies are in the sidebar (as
--- in Grok Bot); here is how to get more (a template, a template file, Grok
--- Bot) and what the clock has sent lately.
-function M.board(): Node
+-- ── Where Buddies starts ─────────────────────────────────────────────────
+-- With no buddy chosen: the templates to start one from, and the ways to bring
+-- one across. (The buddies themselves are in the sidebar and in the drawer.)
+function M.Start(): Node
 	local starters: { [any]: any } = { w_full = true, gap = "$space.1", flex_wrap = true, items = "center" }
 	for _, t in templates.list do
 		table.insert(starters, starter(t))
@@ -599,27 +777,100 @@ function M.board(): Node
 		ui.text {
 			function(): string
 				local n = #(store.list:get() or {})
-				return if n == 0 then "No buddies yet. Start from a template, or bring yours across from Grok Bot." else "Your buddies are in the sidebar. Add another from a template:"
+				return if n == 0 then "No buddies yet. Start from a template, or bring yours across from Grok Bot." else "Your buddies are in the sidebar: pick one, or start another from a template."
 			end,
 			literal = true,
 			color = "$text.tertiary",
 			text_size = "$font.size.sm",
 		},
 		ui.column { w_full = true, gap = "$space.2", heading("Templates"), ui.row(starters) },
-		ui.column {
+	}
+end
+
+-- ── The roster, in the drawer ────────────────────────────────────────────
+-- Every buddy, a row each: its face, its name, and what it is doing. A press
+-- opens its chat; the drawer stays where it is. (The sidebar shows the same
+-- buddies as tiles and rows: this is the drawer's own list, for a window whose
+-- sidebar is folded away, and the place a buddy is made from.)
+function M.Roster(): Node
+	local function placed(): { store.Buddy }
+		local out: { store.Buddy } = {}
+		for _, b in store.list:get() or {} do
+			if not b.hidden then
+				table.insert(out, b)
+			end
+		end
+		return out
+	end
+	local found = ui.computed(placed)
+	return ui.column {
+		w_full = true,
+		gap = "$space.3",
+		pb = "$space.6",
+		GrokImport {},
+		ui.row {
+			w_full = true,
+			items = "center",
+			gap = "$space.2",
+			ui.text {
+				function(): string
+					local n = #found:get()
+					return if n == 1 then "1 buddy" else `{n} buddies`
+				end,
+				literal = true,
+				grow = 1,
+				color = "$text.tertiary",
+				text_size = "$font.size.xs",
+			},
+			ds.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = import_grokbot,
+				ui.text { "Import", literal = true },
+			},
+			ds.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = function()
+					store.create_open:set(true)
+				end,
+				Icon { name = "plus", size = 14 },
+				ui.text { "New", literal = true },
+			},
+		},
+		ui.show(function(): boolean
+			return #found:get() == 0
+		end, ui.column {
 			w_full = true,
 			gap = "$space.2",
-			heading("Recent runs"),
-			runs_list(function(): { store.Run }
-				local out: { store.Run } = {}
-				for i, r in store.runs:get() or {} do
-					if i > 8 then
-						break
-					end
-					table.insert(out, r)
-				end
-				return out
-			end, "Nothing has run yet."),
+			py = "$space.4",
+			items = "center",
+			Icon { name = "users-group-rounded", size = 22, color = "$text.tertiary" },
+			ui.text { "No buddies yet.", literal = true, color = "$text.secondary", text_size = "$font.size.sm" },
+			ui.text { "Make one, or bring yours across from Grok Bot.", literal = true, wrap = true, w_full = true, color = "$text.tertiary", text_size = "$font.size.xs" },
+		}),
+		ui.column {
+			w_full = true,
+			gap = "$zeron.list.gap",
+			ui.each(found, function(b: any): Node
+				return roster_row(b)
+			end, {
+				w_full = true,
+				key = function(b: any): string
+					return b.id
+				end,
+			}),
+		},
+		ui.row {
+			w_full = true,
+			pt = "$space.2",
+			gap = "$space.2",
+			ds.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = import_template,
+				ui.text { "Import a template", literal = true },
+			},
 		},
 	}
 end
@@ -1844,9 +2095,122 @@ local Activity = ui.component(function(props: { buddy: store.Buddy }): Node
 	}
 end)
 
--- ── Its settings, in its drawer ─────────────────────────────────────────
-local tab = store.page_tab
-local deleting = ui.state("kx_buddy_deleting", false)
+-- ── Its thread: what it has done, and what will set it to work ──────────
+-- The drawer's Thread tab. Its chat is beside the drawer; this is the rest of
+-- its thread: the runs it has had (newest first, each opening the chat it was
+-- in) and the routines that will send it work while nobody is looking.
+function M.Thread(b: store.Buddy): Node
+	return ui.column {
+		w_full = true,
+		gap = "$space.6",
+		pb = "$space.6",
+		Section {
+			title = "What it has done",
+			description = "Every run of its routines, newest first.",
+			Activity { buddy = b },
+		},
+		Section {
+			title = "What sets it to work",
+			description = "Prompts sent to it by the clock, or by a webhook.",
+			Automations { buddy = b },
+		},
+	}
+end
+
+-- ── What it knows: memory, the shared one, skills, and its import ────────
+-- One memory file, as the person can read it and change it: the file its
+-- instructions point at, never a copy of them.
+local MemoryCard = ui.component(function(props: { id: string, which: string, title: string, hint: string }): Node
+	local draft = ui.use_state(nil :: string?)
+	ui.effect(function(): (() -> ())?
+		store.read_memory(props.id)
+		return nil
+	end)
+	local function text(): string
+		local m = store.memory:get()
+		return if props.which == "about" then m.about else m.memory
+	end
+	return Section {
+		title = props.title,
+		description = props.hint,
+		Group {
+			ui.show(function(): boolean
+				return draft:get() == nil
+			end, ui.column {
+				w_full = true,
+				gap = "$space.2",
+				px = "$space.3",
+				py = "$space.2",
+				ui.text {
+					function(): string
+						local t = (text() :: string):gsub("^%s+", ""):gsub("%s+$", "")
+						return if t == "" then "Nothing yet." else t
+					end,
+					literal = true,
+					wrap = true,
+					color = function(): string
+						return if (text() :: string) == "" then "$text.tertiary" else "$text.secondary"
+					end,
+					text_size = "$font.size.sm",
+				},
+				ui.row {
+					ui.button {
+						label = `Edit {props.title}`,
+						h = 24,
+						px = "$space.2",
+						rounded = "$radius.md",
+						bg = "#00000000",
+						hover = { bg = "$hover" },
+						on_click = function()
+							draft:set(text())
+						end,
+						ui.text { "Edit", literal = true, color = "$text.secondary", text_size = "$font.size.xs" },
+					},
+				},
+			}),
+			ui.show(function(): boolean
+				return draft:get() ~= nil
+			end, ui.column {
+				w_full = true,
+				gap = "$space.2",
+				px = "$space.3",
+				pb = "$space.3",
+				ds.TextArea { value = draft :: any, rows = 8, max_rows = 18, w_full = true },
+				ui.row {
+					w_full = true,
+					justify = "end",
+					gap = "$space.2",
+					ds.Button {
+						tone = "ghost",
+						size = "sm",
+						on_click = function()
+							draft:set(nil)
+						end,
+						ui.text { "Cancel", literal = true },
+					},
+					ds.Button {
+						size = "sm",
+						on_click = function()
+							local say = draft:peek()
+							if say == nil then
+								return
+							end
+							store.set_memory(props.id, props.which, say, function(ok: boolean, why: string?)
+								if ok then
+									draft:set(nil)
+									ds.toast.show { title = "Saved", body = props.title, tone = "success" }
+								elseif why then
+									ds.toast.show { title = "It couldn't be saved", body = why, tone = "danger" }
+								end
+							end)
+						end,
+						ui.text { "Save", literal = true },
+					},
+				},
+			}),
+		},
+	}
+end)
 
 -- One skill of the library, on or off for this buddy.
 local SkillRow = ui.component(function(props: { id: string, skill: { name: string, description: string } }): Node
@@ -1891,6 +2255,182 @@ local function skills(b: store.Buddy): Node
 		}),
 	}
 end
+
+-- What a Grok Bot import brought it, counted out of its folder: its
+-- conversations, memories, skills and routines, and what it made.
+local Imported = ui.component(function(props: { buddy: store.Buddy }): Node
+	local files = ui.use_state(nil :: { any }?)
+	ui.effect(function(): (() -> void)?
+		ui.call("kx.buddy.files", props.buddy.id):after(function(list: any)
+			files:set(if type(list) == "table" then list else {})
+		end, function()
+			files:set({})
+		end)
+		return nil
+	end)
+	local function counted(): { { label: string, n: number } }
+		local by: { [string]: number } = {}
+		for _, f in files:get() or {} do
+			local path = tostring(f.path or "")
+			local kind = if string.find(path, "^%.grokbot/conversations/", 1)
+				then "conversations"
+				elseif string.find(path, "^%.grokbot/memories/", 1) then "memories"
+				elseif string.find(path, "^%.grokbot/skills/", 1) then "skills"
+				elseif string.find(path, "^%.grokbot/routines/", 1) then "routines"
+				elseif string.find(path, "^From Grok Bot/", 1) then "made"
+				else nil
+			if kind then
+				by[kind] = (by[kind] or 0) + 1
+			end
+		end
+		local out = {}
+		for _, k in { "conversations", "memories", "skills", "routines", "made" } do
+			if by[k] then
+				table.insert(out, { label = k, n = by[k] })
+			end
+		end
+		return out
+	end
+	return Section {
+		title = "From Grok Bot",
+		description = "What it brought across when it was imported. Its own folder, not its memory here: what it reads is above.",
+		ui.show(function(): boolean
+			return files:get() ~= nil and #counted() == 0
+		end, ui.text { "Nothing was imported: this buddy started here.", literal = true, color = "$text.tertiary", text_size = "$font.size.sm" }),
+		ui.show(function(): boolean
+			return #counted() > 0
+		end, Group {
+			ui.each(ui.computed(counted), function(c: any): Node
+				return ds.Settings.Row {
+					label = `{c.n} {c.label}`,
+					control = ui.text { "In its folder", literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
+				}
+			end, {
+				w_full = true,
+				key = function(c: any): string
+					return c.label
+				end,
+			}),
+		}),
+	}
+end)
+
+-- What is in its folder, newest first: what it wrote, and what an import
+-- brought. Each opens in the panel beside its chat.
+local Library = ui.component(function(props: { buddy: store.Buddy }): Node
+	local buddy = props.buddy
+	local files = ui.use_state(nil :: { any }?)
+	ui.call("kx.buddy.files", buddy.id):after(function(list: any)
+		files:set(if type(list) == "table" then list else {})
+	end, function()
+		files:set({})
+	end)
+	local function open(f: any)
+		store.ensure_chat(buddy, function(chat: string?)
+			if not chat then
+				return
+			end
+			local ok, panel = pcall(function(): any
+				return (require :: any)("@app/screens/panel")
+			end)
+			if ok and panel and panel.open_file then
+				panel.open_file(chat, f.path)
+			else
+				pcall(ui.invoke, "kx.artifacts.open", f.full)
+			end
+		end)
+	end
+	return ui.column {
+		w_full = true,
+		gap = "$space.2",
+		ui.show(function(): boolean
+			return files:get() == nil
+		end, ui.column { w_full = true, ds.SkeletonRow { lead = 28, title = 120, line = 80 }, ds.SkeletonRow { lead = 28, title = 150, line = 70 }, ds.SkeletonRow { lead = 28, title = 100, line = 90 } }),
+		ui.show(function(): boolean
+			local f = files:get()
+			return f ~= nil and #f == 0
+		end, ui.text { "Nothing yet. What it writes in its folder shows here.", literal = true, wrap = true, px = "$space.1", color = "$text.tertiary", text_size = "$font.size.xs" }),
+		ui.presence(function(): string
+			local f = files:get()
+			return if f and f[1] then f[1].path .. ":" .. tostring(f[1].modified) else ""
+		end, function(key: string): Node
+			local f = files:peek()
+			if key == "" or not f then
+				return ui.div {}
+			end
+			local first = f[1]
+			return ui.button {
+				label = first.title,
+				w_full = true,
+				p = "$space.3",
+				gap = "$space.1",
+				direction = "column",
+				items = "start",
+				rounded = "$radius.lg",
+				bg = "$zeron.secondary.bg",
+				hover = { bg = "$zeron.secondary.hover" },
+				on_click = function()
+					open(first)
+				end,
+				ui.text { "Latest", literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
+				ui.text { first.title, literal = true, w_full = true, wrap = true, color = "$text.primary", text_size = "$font.size.sm", weight = "$font.weight.semibold" },
+				ui.row {
+					gap = "$space.1",
+					items = "center",
+					Avatar { look = buddy.look, seed = buddy.id, size = 14 },
+					ui.text { `{buddy.name} · {ago(first.modified)}`, literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
+				},
+			}
+		end, { w_full = true }),
+		ui.each(ui.computed(function(): { any }
+			return files:get() or {}
+		end), function(f: any): Node
+			return ui.button {
+				label = f.title,
+				w_full = true,
+				h = 36,
+				px = "$space.2",
+				gap = "$space.2",
+				items = "center",
+				rounded = "$radius.md",
+				bg = "#00000000",
+				hover = { bg = "$hover" },
+				on_click = function()
+					open(f)
+				end,
+				Icon { name = "document", size = 14, color = "$text.secondary" },
+				ui.text { f.title, literal = true, grow = 1, truncate = true, color = "$text.primary", text_size = "$font.size.sm" },
+				ui.text { ago(f.modified), literal = true, color = "$text.tertiary", text_size = "$font.size.xs" },
+			}
+		end, {
+			w_full = true,
+			gap = 0,
+			key = function(f: any): string
+				return `{f.path}:{f.modified}`
+			end,
+		}),
+	}
+end)
+
+function M.Knowledge(b: store.Buddy): Node
+	return ui.column {
+		w_full = true,
+		gap = "$space.6",
+		pb = "$space.6",
+		MemoryCard { id = b.id, which = "mine", title = "What it remembers", hint = "Its own MEMORY.md, in its folder. It writes here as it works, and reads it when it starts." },
+		MemoryCard { id = b.id, which = "about", title = "What every buddy knows about you", hint = "ABOUT-YOU.md, read by all of them. One place for the things you'd tell each of them twice." },
+		skills(b),
+		Imported { buddy = b },
+		Section {
+			title = "Its folder",
+			description = "What it wrote, and what it brought, newest first.",
+			Library { buddy = b },
+		},
+	}
+end
+
+-- ── Its settings: who it is, what it runs on, its computer ───────────────
+local deleting = ui.state("kx_buddy_deleting", false)
 
 -- The computer every buddy shares (as Grok Bot's bots do), and this one's
 -- place on it.
@@ -1950,71 +2490,51 @@ local function shared(b: store.Buddy): Node
 	}
 end
 
--- A buddy's settings, as its drawer shows them: who it is, its computer, its
--- routines and what they've done.
+-- A buddy's settings, as its drawer shows them behind the gear: who it is,
+-- what it runs on, its folder, its computer, and how to take it away.
 function M.Settings(b: store.Buddy): Node
 	return ui.column {
 		w_full = true,
-		gap = "$space.4",
+		gap = "$space.6",
 		pb = "$space.6",
-		ds.Segmented {
-			value = tab,
-			fill = true,
-			options = {
-				{ value = "profile", label = "Profile" },
-				{ value = "computer", label = "Computer" },
-				{ value = "automations", label = "Routines" },
-				{ value = "activity", label = "Runs" },
+		Profile { buddy = b },
+		Section {
+			title = "Its computer",
+			description = "A desktop of its own, or the one every buddy shares.",
+			shared(b),
+			Computer { buddy = b },
+		},
+		ui.row {
+			w_full = true,
+			gap = "$space.2",
+			ds.Button {
+				tone = "secondary",
+				size = "sm",
+				on_click = function()
+					store.export(b, function(path: string?, why: string?)
+						if path then
+							ds.toast.show { title = "Saved as a template", body = path, tone = "success" }
+						elseif why then
+							ds.toast.show { title = "It couldn't be saved", body = why, tone = "danger" }
+						end
+					end)
+				end,
+				ui.text { "Save as a template", literal = true },
+			},
+			ui.div { grow = 1 },
+			ds.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = function()
+					deleting:set(true)
+				end,
+				ui.text { "Remove this buddy", literal = true, color = "$danger" },
 			},
 		},
-		ui.presence(function(): string
-			return tab:get()
-		end, function(which: string): Node
-			if which == "computer" then
-				return ui.column { w_full = true, gap = "$space.4", shared(b), Computer { buddy = b } }
-			elseif which == "automations" then
-				return Automations { buddy = b }
-			elseif which == "activity" then
-				return Activity { buddy = b }
-			end
-			return ui.column {
-				w_full = true,
-				gap = "$space.6",
-				Profile { buddy = b },
-				skills(b),
-				ui.row {
-					w_full = true,
-					gap = "$space.2",
-					ds.Button {
-						tone = "secondary",
-						size = "sm",
-						on_click = function()
-							store.export(b, function(path: string?, why: string?)
-								if path then
-									ds.toast.show { title = "Saved as a template", body = path, tone = "success" }
-								elseif why then
-									ds.toast.show { title = "It couldn't be saved", body = why, tone = "danger" }
-								end
-							end)
-						end,
-						ui.text { "Save as a template", literal = true },
-					},
-					ui.div { grow = 1 },
-					ds.Button {
-						tone = "ghost",
-						size = "sm",
-						on_click = function()
-							deleting:set(true)
-						end,
-						ui.text { "Remove this buddy", literal = true, color = "$danger" },
-					},
-				},
-			}
-		end, { w_full = true }),
 		ds.Dialog {
 			open = deleting,
 			title = `Remove {b.name}?`,
-			body = "Its routines go with it and its chat is archived. Its folder, with what it wrote, stays on disk.",
+			body = "Its routines go with it and its chat is archived. Its folder, with what it wrote and what it remembers, stays on disk.",
 			tone = "danger",
 			confirm = {
 				label = "Remove",
@@ -2024,26 +2544,12 @@ function M.Settings(b: store.Buddy): Node
 						sessions.archive(b.chat)
 					end
 					store.remove(b.id)
-					store.inspector_tab:set("activity")
-					go_board()
+					store.inspector_tab:set("roster")
+					go_start()
 				end,
 			},
 		},
 	}
-end
-
--- A buddy's settings as a page: where an older link to its page leads.
-function M.buddy(): Node
-	return ui.presence(function(): string
-		local b = store.by_id(store.selected:get())
-		return if b then b.id else ""
-	end, function(id: string): Node
-		local b = store.by_id(id)
-		if not b then
-			return page { ds.EmptyState { icon = "users-group-rounded", size = "sm", title = "That buddy is gone", body = "The others are in the sidebar." } }
-		end
-		return page { ui.text { b.name, literal = true, color = "$text.primary", text_size = "$font.size.xl", weight = "$font.weight.semibold" }, M.Settings(b) }
-	end, { w_full = true, h_full = true })
 end
 
 return M

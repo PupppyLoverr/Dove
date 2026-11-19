@@ -321,12 +321,12 @@ end
 
 -- Whether the create-a-buddy dialog shows.
 M.create_open = ui.state("kx_buddy_create_open", false)
--- Which tab a buddy's page shows (its chat bar and drawer jump to one).
-M.page_tab = ui.state("kx_buddy_page_tab", "profile")
 -- Whether a buddy's chat shows its drawer (kx/buddies/chat_bar), and which
 -- of its tabs; kept between launches.
 M.inspector_open = ui.persist("kx_buddy_inspector", true)
-M.inspector_tab = ui.persist("kx_buddy_inspector_tab", "activity")
+-- Which of the drawer's tabs: "roster", "thread", "knowledge", or "settings"
+-- (behind the gear).
+M.inspector_tab = ui.persist("kx_buddy_inspector_tab", "thread")
 -- Whether the "Create a routine" suggestion was put away.
 M.routine_hint_hidden = ui.persist("kx_buddy_routine_hint_hidden", false)
 
@@ -418,8 +418,8 @@ function M.open(buddy: Buddy)
 	end)
 end
 
--- Its chat, with its drawer open on `tab` ("activity", "library" or
--- "settings"): where a buddy is set up, as in Grok Bot.
+-- Its chat, with its drawer open on `tab` ("roster", "thread", "knowledge"
+-- or "settings"): where a buddy is set up, as in Grok Bot.
 function M.show(buddy: Buddy, tab: string?)
 	M.inspector_open:set(true)
 	M.inspector_tab:set(tab or "settings")
@@ -494,6 +494,37 @@ function M.set_skill(buddy: Buddy, name: string, on: boolean)
 		end
 	end
 	M.save({ id = buddy.id, name = buddy.name, skills = now })
+end
+
+-- What it knows, for the drawer's Knowledge tab: its own `MEMORY.md` and the
+-- `ABOUT-YOU.md` every buddy shares (src/kx/buddies.rs keeps both).
+M.memory = ui.state("kx_buddy_memory", { memory = "", about = "" } :: { memory: string, about: string })
+function M.read_memory(id: string)
+	-- (As above: a window that has not lent this has nothing to read.)
+	local ok, promise = pcall(ui.call, "kx.buddy.memory", id)
+	if not ok then
+		return
+	end
+	promise:after(function(m: any)
+		if type(m) == "table" then
+			M.memory:set({ memory = tostring(m.memory or ""), about = tostring(m.about or "") })
+		end
+	end, function() end)
+end
+
+-- A save of what it knows (`which`: "mine" or "about"); did(ok, why).
+function M.set_memory(id: string, which: string, text: string, did: (ok: boolean, why: string?) -> ())
+	local ok, promise = pcall(ui.call, "kx.buddy.set_memory", { id = id, which = which, text = text })
+	if not ok then
+		did(false, "This window can't save it.")
+		return
+	end
+	promise:after(function()
+		M.read_memory(id)
+		did(true, nil)
+	end, function(why: any)
+		did(false, tostring(why))
+	end)
 end
 
 -- The computer every buddy shares: `{ id, name }` or nil.

@@ -424,9 +424,12 @@ end
 
 function M.page(id: string): Node?
 	if id == "buddies" then
-		return require("@app/kx/buddies/page").board()
+		-- (There is no buddies page: what a buddy is, is its drawer. This is
+		-- only where the space opens with none chosen.)
+		return require("@app/kx/buddies/drawer").Start()
 	elseif id == "buddy" then
-		return require("@app/kx/buddies/page").buddy()
+		-- (A link to the old page for one buddy lands where the space starts.)
+		return require("@app/kx/buddies/drawer").Start()
 	elseif id == "account" then
 		return require("@app/kx/synced").page()
 	elseif id == "kanban" then

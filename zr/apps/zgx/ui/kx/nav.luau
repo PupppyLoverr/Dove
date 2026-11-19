@@ -62,7 +62,15 @@ function M.open(page: any, toggle_filter: () -> ()): boolean
 		return false
 	end
 	if page.id == "buddies" then
-		route.plugin_page(M.PLUGIN, "buddies")
+		-- (Buddies is not a page: a buddy opens its chat, its drawer beside it,
+		-- as Grok Bot's bots do. With none chosen, the ways to make one.)
+		local store = require("@app/kx/buddies/store")
+		local b = store.by_id(store.selected:peek())
+		if b then
+			store.open(b)
+		else
+			route.plugin_page(M.PLUGIN, "buddies")
+		end
 	elseif page.id == "projects" then
 		toggle_filter()
 	elseif page.id == "artifacts" then
