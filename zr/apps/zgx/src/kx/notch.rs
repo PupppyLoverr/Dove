@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use zgx_desktop::{WindowBounds, WindowContext, WindowLevel, WindowOptions};
+use zgx_desktop::{WindowBounds, WindowContext, WindowHandle, WindowLevel, WindowOptions};
 
 /// The island's window, in points: room for its largest shape, which a
 /// sprung region cuts out of it (see `shape`). It never moves or resizes.
@@ -67,15 +67,41 @@ pub fn system_scale() -> f64 {
     if dpi == 0 { 1. } else { dpi as f64 / 96. }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn system_scale() -> f64 {
+    use core_graphics::display::CGDisplay;
+    // (Retina reads 2: the main display's pixels against the points it
+    // reports for itself.)
+    let display = CGDisplay::main();
+    let pixels = display.display_mode().map(|mode| mode.pixel_width() as f64).unwrap_or(0.);
+    let points = display.bounds().size.width;
+    if pixels > 0. && points > 0. { pixels / points } else { 1. }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn system_scale() -> f64 {
     1.
 }
 
-#[cfg(not(windows))]
+/// The island's window starts at the top centre of the primary display on a
+/// Mac, as on Windows. (AppKit's screens are points, the window's bounds
+/// pixels; `CGDisplay::main()` reports the primary with its origin at 0,0.)
+#[cfg(target_os = "macos")]
 fn top_centre() -> Option<WindowBounds> {
-    // macOS and Linux place it where the platform does until the island's
-    // own placement (the notch on a MacBook) is ported.
+    use core_graphics::display::CGDisplay;
+    let frame = CGDisplay::main().bounds();
+    if frame.size.width <= 0. {
+        return None;
+    }
+    let scale = system_scale();
+    let (w, h) = ((SIZE.0 * scale) as u32, (SIZE.1 * scale) as u32);
+    Some(WindowBounds { position: Some((((frame.size.width - SIZE.0) / 2.) * scale).round() as i32, 0), size: (w, h) })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn top_centre() -> Option<WindowBounds> {
+    // (Linux places it where the compositor does until the island's own
+    // placement is ported.)
     None
 }
 
@@ -114,6 +140,8 @@ pub fn open(
         if let zgx_script::Value::Str(path) = path {
             #[cfg(windows)]
             let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
         }
     });
     host.action("notch.focus", move |thread| {
@@ -160,9 +188,10 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     window.set_glass(None);
     behind(cx, host);
     let (aim, aimed) = flume::unbounded::<[f64; 6]>();
+    let shaped = cx.window.clone();
     std::thread::Builder::new()
         .name("kx-notch-shape".into())
-        .spawn(move || shape(aimed))
+        .spawn(move || shape(shaped, aimed))
         .ok();
     let resize = cx.window.clone();
     host.action("notch.size", move |req| {
@@ -209,7 +238,7 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
 /// what's under. Woken by each new aim (w, h, corner, how far down, in
 /// points); asleep once it settles.
 #[cfg(windows)]
-fn shape(aimed: flume::Receiver<[f64; 6]>) {
+fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
     use windows_sys::Win32::{
         Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute},
         Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
@@ -329,8 +358,67 @@ fn shape(aimed: flume::Receiver<[f64; 6]>) {
     }
 }
 
-#[cfg(not(windows))]
-fn shape(aimed: flume::Receiver<[f64; 6]>) {
+/// The island's shape, sprung (macOS). AppKit has no window region to cut, so
+/// the window is the pill: its top stays on the screen's edge — the script
+/// places the pill `y` points below the top of its own window, which is what
+/// `ui.spring(aim_y)` means there — and its width and height follow the pill
+/// (with its bubble, and the room the shadow needs) as it springs. Nothing of
+/// the window is left over the desktop to eat a click.
+#[cfg(target_os = "macos")]
+fn shape(window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
+    let scale = system_scale();
+    let (k, c) = SPRING;
+    let mut now = [0f64; 6];
+    let mut speed = [0f64; 6];
+    let mut aim = [0f64; 6];
+    let step = 1. / 120.;
+    let mut first = true;
+    loop {
+        // Asleep until there's somewhere to go.
+        let settled = (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
+        if settled && next.is_none() {
+            return;
+        }
+        if let Some(next) = next {
+            aim = next;
+            // (It starts from where it rests, above the edge, not from
+            // nothing at the window's corner.)
+            if first {
+                first = false;
+                now = aim;
+            }
+        }
+        let started = std::time::Instant::now();
+        for i in 0..6 {
+            // (Semi-implicit Euler, at 120 a second.)
+            speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
+            now[i] += speed[i] * step;
+        }
+        if (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+            now = aim;
+            speed = [0.; 6];
+        }
+        // The pill and its bubble, centred together; the window grows round
+        // them by the shadow's room on every side.
+        let wide = now[0].max(0.) + now[4].max(0.) + now[5].max(0.);
+        let tall = now[3].max(0.) + now[1].max(0.);
+        let points = screen_width() / scale;
+        let w = ((wide + SHADOW * 2.) * scale).round() as u32;
+        let h = ((tall + SHADOW * 2.) * scale).round() as u32;
+        let x = (((points - wide) / 2. - SHADOW).max(0.) * scale).round() as i32;
+        if w > 1 && h > 1 {
+            window.set_bounds(WindowBounds { position: Some((x, 0)), size: (w, h) });
+        }
+        let spent = started.elapsed();
+        if let Some(rest) = std::time::Duration::from_secs_f64(step).checked_sub(spent) {
+            std::thread::sleep(rest);
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
     while aimed.recv().is_ok() {}
 }
 
@@ -731,7 +819,15 @@ fn screen_width() -> f64 {
     unsafe { GetSystemMetrics(SM_CXSCREEN) as f64 }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn screen_width() -> f64 {
+    use core_graphics::display::CGDisplay;
+    // (Pixels, as the Windows one is: every caller here works in pixels.)
+    let frame = CGDisplay::main().bounds();
+    frame.size.width * system_scale()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn screen_width() -> f64 {
     1440.
 }
@@ -784,7 +880,58 @@ fn watch(tell: flume::Sender<bool>) {
     }
 }
 
-#[cfg(not(windows))]
+/// Where the pointer is, on a Mac: the island shows while it reaches for the
+/// top edge over the middle of the screen, and while it's over the opened
+/// island, and goes 450 ms after it leaves — the same as the Windows thread.
+#[cfg(target_os = "macos")]
+fn watch(tell: flume::Sender<bool>) {
+    use core_graphics::event::{CGEvent, CGEventSource, CGEventSourceStateID};
+    let scale = system_scale();
+    let reach_w = 460. * scale;
+    let (mut shown, mut rested, mut away) = (false, 0u32, 0u32);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(if shown { 50 } else { 90 }));
+        // (A null event carries the pointer's place; reading it needs no
+        // permission.)
+        let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+            continue;
+        };
+        let Ok(event) = CGEvent::new(source) else { continue };
+        let p = event.location();
+        let screen = screen_width();
+        let (x, y) = (p.x, p.y);
+        let left = (screen - reach_w) / 2.;
+        let reach = y <= 3. * scale && x >= left && x <= left + reach_w;
+        let (rx, ry, rw, rh) = RECT.lock().map(|r| *r).unwrap_or_default();
+        let margin = 10. * scale;
+        let over = x >= rx - margin && x <= rx + rw + margin && y >= ry - margin && y <= ry + rh + margin;
+        let now = if shown {
+            if over || reach {
+                away = 0;
+                true
+            } else {
+                away += 1;
+                // (450 ms at 50 ms a look.)
+                away < 9
+            }
+        } else if reach {
+            rested += 1;
+            // (Resting at the edge a moment, not passing through.)
+            rested >= 1
+        } else {
+            rested = 0;
+            false
+        };
+        if now != shown {
+            shown = now;
+            if tell.send(now).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn watch(tell: flume::Sender<bool>) {
     // Elsewhere: always shown, as before.
     let _ = tell.send(true);
