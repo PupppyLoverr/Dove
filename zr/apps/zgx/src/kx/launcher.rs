@@ -432,7 +432,7 @@ fn apps() -> &'static [App] {
     static APPS: OnceLock<Vec<App>> = OnceLock::new();
     APPS.get_or_init(|| {
         let mut out = store_apps();
-        let mut dirs = Vec::new();
+        let mut dirs: Vec<PathBuf> = Vec::new();
         #[cfg(windows)]
         {
             if let Some(p) = std::env::var_os("ProgramData") {
@@ -442,11 +442,20 @@ fn apps() -> &'static [App] {
                 dirs.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs"));
             }
         }
+        // (A Mac's apps are bundles in these three folders, not shortcuts.)
+        #[cfg(target_os = "macos")]
+        {
+            dirs.push(PathBuf::from("/Applications"));
+            dirs.push(PathBuf::from("/System/Applications"));
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.push(PathBuf::from(home).join("Applications"));
+            }
+        }
         for dir in dirs {
             for entry in walkdir::WalkDir::new(dir).max_depth(4).into_iter().flatten() {
                 let path = entry.path();
                 let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                if !matches!(ext.as_str(), "lnk" | "url" | "appref-ms") {
+                if !matches!(ext.as_str(), "lnk" | "url" | "appref-ms" | "app") {
                     continue;
                 }
                 let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
