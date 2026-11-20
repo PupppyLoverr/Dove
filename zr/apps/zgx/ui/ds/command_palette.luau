@@ -15,9 +15,10 @@
 -- to one kind, each saying how many it holds.
 --
 -- Everything is on the keys, from the field: ↑ ↓ move (round the ends),
--- Enter does the row, ⌘Enter its second action, Tab the next scope, → or
--- Tab opens a row's page, Backspace on an empty field goes back a page (or
--- out of a scope), Escape clears the field, then goes back, then closes;
+-- Enter does the row, ⌘Enter its second action, Tab the row's actions (the
+-- panel, even for a row with none, which says so), Shift-Tab the next scope,
+-- → a row's page, Backspace on an empty field goes back a page (or out of a
+-- scope), Escape clears the field, then goes back, then closes;
 -- ⌘L types a page's path (a folder's), to edit, and Tab completes what's
 -- typed where the page can. A row clicked leaves the keys with the field.
 -- The highlight slides from row to row. A row under a moving pointer is the
@@ -734,7 +735,13 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	local depth = ui.use_state(1)
 	local hi = ui.use_state(nil :: string?)
 	-- The action panel (Tab): open or not, and the action under its keys.
-	local panel = ui.use_state(false)
+	-- (A named state, so the window's devtools and the tests read it —
+	-- `zgx inspect state palette_panel`; the panel closes with the palette,
+	-- as reopening it shows the list.)
+	local panel = ui.state("palette_panel", false)
+	ui.on_cleanup(function()
+		panel:set(false)
+	end)
 	local act = ui.use_state(0)
 	-- Space's large preview: the pane over the list instead of beside it.
 	local large = ui.use_state(false)
@@ -1552,8 +1559,11 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				return true
 			end
 			local r = by_key[hi:peek() or ""]
-			-- The row's actions (macOS 27's Tab), the panel showing them.
-			if r and r.item and not e.shift and #actions_of(r.item) > 0 then
+			-- The row's actions (macOS 27's Tab), the panel showing them — a
+			-- row with none opens it too, and it says so: Tab used to move the
+			-- scope here, which read as a dead key on a palette that had just
+			-- opened, the panel never once appearing from it.
+			if r and r.item and not e.shift then
 				act:set(0)
 				panel:set(true)
 				return true
@@ -1811,7 +1821,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			pr = "$space.2",
 			gap = "$zeron.space.tight",
 			items = "center",
-			Kbd { keys = "tab", tone = "quiet" },
+			Kbd { keys = "shift+tab", tone = "quiet" },
 			ui.text { locale.t("ds.command_palette.next_scope"), text_size = "$font.size.xs", color = "$text.tertiary" },
 		}
 	)
@@ -2410,9 +2420,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				shrink = 0,
 				items = "center",
 				gap = "$zeron.space.tight",
-				-- (Tab opens this; the app's text field takes Tab before the
-				-- palette hears it, so it is a target as well — the same keys,
-				-- a click away.)
+				-- (Tab opens this; the button is the same keys, a click away.)
 				ui.show(function(): boolean
 					return not acting() and #actions_of(selected()) > 0
 				end, ui.button {

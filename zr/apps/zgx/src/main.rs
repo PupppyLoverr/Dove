@@ -101,6 +101,8 @@ mod focus_tests;
 #[cfg(test)]
 mod palette_focus_tests;
 #[cfg(test)]
+mod palette_tab_tests;
+#[cfg(test)]
 mod popups_tests;
 #[cfg(test)]
 mod placement_tests;
