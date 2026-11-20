@@ -735,12 +735,12 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	local depth = ui.use_state(1)
 	local hi = ui.use_state(nil :: string?)
 	-- The action panel (Tab): open or not, and the action under its keys.
-	-- (A named state, so the window's devtools and the tests read it —
-	-- `zgx inspect state palette_panel`; the panel closes with the palette,
-	-- as reopening it shows the list.)
-	local panel = ui.state("palette_panel", false)
-	ui.on_cleanup(function()
-		panel:set(false)
+	local panel = ui.use_state(false)
+	-- (Said again as `palette.panel`, for the window's devtools and the
+	-- tests: a palette's own state is per instance, and this follows it.)
+	local panel_shown = ui.shared("palette.panel", false)
+	ui.effect(function()
+		panel_shown:set(panel:get())
 	end)
 	local act = ui.use_state(0)
 	-- Space's large preview: the pane over the list instead of beside it.
