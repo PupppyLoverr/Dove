@@ -24,12 +24,9 @@ fn open(app: &mut TestApp) {
     assert!(app.find("#palette-search").is_some(), "the palette never opened");
 }
 
-/// Whether the action panel is up (the palette says so as `palette_panel`;
-/// a script's named state carries its own file's name in front).
+/// Whether the action panel is up (the palette says so as `palette.panel`).
 fn panel_up(app: &TestApp) -> bool {
-    app.host.states().into_iter().any(|(name, value)| {
-        name.ends_with("::palette_panel") && matches!(value, Value::Bool(true))
-    })
+    app.host.states().into_iter().any(|(name, value)| name == "palette.panel" && matches!(value, Value::Bool(true)))
 }
 
 #[test]

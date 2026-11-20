@@ -84,6 +84,100 @@ end)
 
 local glow = kx.motion.breath(0.55, 1)
 
+-- ── The one slot, ranked ────────────────────────────────────────────────
+-- KEPL-13 §5.3, Apple's model: one primary slot, ranked by a score of our
+-- own, the rest counted rather than given slots of their own. Whoever needs
+-- you is sticky at the top; what failed holds next, then what finished
+-- unread, then whoever is working; a thread merely done is counted, never
+-- shown. Inside a class the newest wins, then the id — stable, so the pill
+-- never flickers between equals. The width never grows with the count.
+local RANK: { [string]: number } = { needs_you = 100, failed = 80, done = 60, running = 40, idle = 0 }
+
+local ranked = ui.computed(function(): { store.Thread }
+	local out: { store.Thread } = {}
+	for _, t in store.threads:get() do
+		if (RANK[t.status] or 0) > 0 then
+			table.insert(out, t)
+		end
+	end
+	table.sort(out, function(a: store.Thread, b: store.Thread): boolean
+		local sa = RANK[a.status] or 0
+		local sb = RANK[b.status] or 0
+		if sa ~= sb then
+			return sa > sb
+		end
+		if (a.updated or 0) ~= (b.updated or 0) then
+			return (a.updated or 0) > (b.updated or 0)
+		end
+		return a.id < b.id
+	end)
+	return out
+end)
+
+-- What the slot holds, and how many others are live beside it.
+local slot = ui.computed(function(): store.Thread?
+	return ranked:get()[1]
+end)
+local elsewhere = ui.computed(function(): number
+	return math.max(0, #ranked:get() - 1)
+end)
+
+-- A minute's tick, so the slot's elapsed counts while it shows (nothing
+-- else in the island ticks: the pointer's watcher is all that runs at rest).
+local minute = ui.state("notch.minute", 0)
+-- Where a satellite sits, in points from the island's centre: one alone is
+-- centred; two sit either side of the centre, which stays free; three put
+-- whoever ranks first in it (`the centre reserved for whoever needs you`)
+-- and the next two either side. Never more than three, never wider.
+local SAT = 32
+local function slots(n: number): { number }
+	if n <= 1 then
+		return { 0 }
+	elseif n == 2 then
+		return { -36, 36 }
+	end
+	return { 0, -36, 36 }
+end
+
+-- The minimal island's satellites: the rank's first three, each with where
+-- its circle sits.
+local sat_at = ui.computed(function(): { { t: store.Thread, o: number } }
+	local out: { { t: store.Thread, o: number } } = {}
+	local list = ranked:get()
+	local where = slots(math.min(3, #list))
+	for i, o in where do
+		local t = list[i]
+		if t then
+			table.insert(out, { t = t, o = o })
+		end
+	end
+	return out
+end)
+local satellites = ui.computed(function(): { { d: number, o: number } }
+	local out: { { d: number, o: number } } = {}
+	for _, s in sat_at:get() do
+		table.insert(out, { d = SAT, o = s.o })
+	end
+	return out
+end)
+
+local function elapsed(t: store.Thread?): string
+	minute:get()
+	if not t then
+		return ""
+	end
+	local since = os.time() - math.floor(t.updated or os.time())
+	if since < 60 then
+		return "now"
+	end
+	local m = math.floor(since / 60)
+	if m < 60 then
+		return `{m}m`
+	end
+	local h = math.floor(m / 60)
+	return `{h}h {m % 60}m`
+end
+
 local function clock(): string
 	local t = now:get()
 	return string.format("%d:%02d", t.hour, t.minute)
@@ -273,18 +367,21 @@ local state = ui.computed(function(): string
 	if flash:get() then
 		return "flash"
 	end
-	-- (Pinned: something's happening, so it stays out, compact.)
-	if pin:get() and #live:get() > 0 then
-		return "slim"
+	-- (Pinned: something's happening, so it stays out, compact — the top of
+	-- the rank while a thread is live, whatever it's doing.)
+	if pin:get() then
+		return if #ranked:get() > 0 then "slim" elseif #live:get() > 0 then "slim" else "hidden"
 	end
-	return "hidden"
+	-- (Not pinned: nothing of it shows while one thread is live, and with
+	-- several the satellites do — detached, each its own thread.)
+	return if #ranked:get() >= 2 then "minimal" else "hidden"
 end)
 
 -- Each state's pill, in points: its width and height, its corners, how far
 -- below the screen's edge it floats (above it, out of sight, while it
 -- rests), and whether it takes clicks. (The Dynamic Island's: compact, a
 -- banner, and expanded by what it shows.)
-type Shape = { w: number, h: number, r: number, y: number, interactive: boolean, b: number?, g: number? }
+type Shape = { w: number, h: number, r: number, y: number, interactive: boolean, b: number?, g: number?, sats: { { d: number, o: number } }? }
 -- (The gap between the screen's edge and the island.)
 local FLOAT = 8
 -- (Apple's island: quick, overshooting a touch as it lands, so the shape
@@ -586,21 +683,90 @@ local function slim_working(): Node
 	)
 end
 
--- What the compact island holds: what waits on you, else every live
--- activity at once ("agents+music+timer"), else the time at rest.
-local slim_kind = ui.computed(function(): string
-	if first:get() then
-		return "waiting"
-	end
-	local l = live:get()
-	return if #l == 0 then "resting" else table.concat(l, "+")
+-- The slot's dot, in the class it holds (KEPL-13 §5.2: amber needs you,
+-- blue working, green done, red error), breathing while it works.
+local DOT: { [string]: string } = { needs_you = "#ffb454", running = "#8fb4ff", done = "#4ade80", failed = "#f87171" }
+local dot_breath = kx.motion.breath(0.45, 1)
+local function slot_dot(t: store.Thread): Node
+	return ui.div {
+		w = 6,
+		h = 6,
+		shrink = 0,
+		rounded = "$radius.full",
+		bg = ui.raw(DOT[t.status] or "#ffffff8c", "a thread's dot, in the class it holds"),
+		opacity = if t.status == "running" then dot_breath else 1,
+	}
+end
+
+-- The slot: one agent's mark, the dot of how it stands, its elapsed, and the
+-- count of the others ("· 4"). One row, whatever the count. (One item, keyed:
+-- a second presence inside the island's own stalls the island's, and the pill
+-- paints its glass with nothing in it.)
+local slot_one = ui.computed(function(): { store.Thread }
+	local t = slot:get()
+	return if t then { t } else {}
 end)
-local function slim_count(kind: string): number
-	if kind == "waiting" or kind == "resting" then
-		return 0
-	end
-	local _, plus = string.gsub(kind, "%+", "")
-	return plus + 1
+local function slim_slot(): Node
+	return ui.each(slot_one, function(t: store.Thread): Node
+		return ui.row {
+			w_full = true,
+			h_full = true,
+			gap = "$space.2",
+			items = "center",
+			kx.AgentMark { agent = t.harness_id, size = 8, live = function(): boolean
+				return true
+			end },
+			slot_dot(t),
+			white(t.title, "$font.size.xs"),
+		}
+	end, {
+		key = function(t: store.Thread): string
+			return t.id
+		end,
+		grow = 1,
+		min_w = 0,
+		gap = 0,
+	})
+end
+
+local function slot_trail(): Node
+	return ui.row {
+		gap = "$space.2",
+		items = "center",
+		ui.text {
+			function(): string
+				return elapsed(slot:get())
+			end,
+			literal = true,
+			text_size = "$font.size.xs",
+			color = "#ffffff8c",
+			tabular = true,
+		},
+		ui.show(function(): boolean
+			return elsewhere:get() > 0
+		end, ui.text {
+			function(): string
+				local n = elsewhere:get()
+				return `· {if n > 99 then "99+" else n}`
+			end,
+			literal = true,
+			text_size = "$font.size.xs",
+			color = "#ffffff8c",
+			tabular = true,
+		}),
+	}
+end
+
+local function slim_slot_bar(): Node
+	return ui.row {
+		w_full = true,
+		h_full = true,
+		px = 12,
+		gap = "$space.2",
+		items = "center",
+		slim_slot(),
+		slot_trail(),
+	}
 end
 
 -- The timer's ring, small: it empties as the time runs out.
@@ -630,6 +796,35 @@ local function slim_timer(): Node
 	return compact(timer_ring(18, 2.5), white("Timer", "$font.size.xs"), amber(timer_text, "$font.size.sm"))
 end
 
+-- What the compact island holds: what waits on you, else the top of the
+-- rank (whoever needs you, then what failed, what finished, who is working)
+-- with its elapsed and the count of the others, else every live activity at
+-- once ("agents+music+timer"), else the time at rest.
+local slim_kind = ui.computed(function(): string
+	if first:get() then
+		return "waiting"
+	end
+	if slot:get() then
+		return "slot"
+	end
+	local l = live:get()
+	return if #l == 0 then "resting" else table.concat(l, "+")
+end)
+
+-- The slot's elapsed counts while it shows.
+local minute_stop: (() -> ())? = nil
+ui.effect(function()
+	local showing = state:get() == "slim" and slim_kind:get() == "slot"
+	if showing and not minute_stop then
+		minute_stop = ui.every(30000, function()
+			minute:set(minute:peek() + 1)
+		end)
+	elseif minute_stop and not showing then
+		minute_stop()
+		minute_stop = nil
+	end
+end)
+
 -- The activity the pill holds: what waits, the first live one, or rest.
 local slim_lead = ui.computed(function(): string
 	local k = slim_kind:get()
@@ -651,6 +846,8 @@ local function slim(): Node
 		end
 		if kind == "agents" then
 			return slim_working()
+		elseif kind == "slot" then
+			return slim_slot_bar()
 		elseif kind == "music" then
 			return slim_music()
 		elseif kind == "timer" then
@@ -997,7 +1194,18 @@ local home_threads = ui.computed(function(): { store.Thread }
 	end
 	return { table.unpack(list, 1, n) }
 end)
-local all_threads = threads(9)
+-- (In the rank's order, so the page's rows are the pill's slot and then the
+-- next of the same order.)
+local all_threads = ui.computed(function(): { store.Thread }
+	local out: { store.Thread } = {}
+	for i, t in ranked:get() do
+		if i > 9 then
+			break
+		end
+		table.insert(out, t)
+	end
+	return out
+end)
 
 local function thread_list(list: State<{ store.Thread }>): Node
 	return ui.each(list, thread_row, {
@@ -2158,6 +2366,42 @@ local function tabs(): Node
 	return ui.row(row)
 end
 
+-- The five rows the page shows (KEPL-13 §5.3: at 46 points each, the rest
+-- counted rather than scrolled into a wall), and how many are past them.
+local SHOWN_ROWS = 5
+local page_rows = ui.computed(function(): { store.Thread }
+	local list = all_threads:get()
+	if #list <= SHOWN_ROWS then
+		return list
+	end
+	return { table.unpack(list, 1, SHOWN_ROWS) }
+end)
+
+-- ↑ ↓ ↵ esc over the rows, while the island has the keys (a click gives it
+-- them, as a window's does; nothing here takes them on its own).
+local row_at = ui.state("notch.row", 1)
+local function page_keys(e: any): boolean?
+	local list = page_rows:get()
+	if #list == 0 then
+		return false
+	end
+	local at = math.clamp(row_at:peek(), 1, #list)
+	if e.key == "ArrowDown" then
+		row_at:set((at % #list) + 1)
+		return true
+	elseif e.key == "ArrowUp" then
+		row_at:set((at - 2) % #list + 1)
+		return true
+	elseif e.key == "Enter" then
+		open_chat(list[at].id)
+		return true
+	elseif e.key == "Escape" then
+		expanded:set(false)
+		return true
+	end
+	return false
+end
+
 local function agents_page(): Node
 	return ui.show(function()
 		return #all_threads:get() > 0
@@ -2186,19 +2430,74 @@ local function agents_page(): Node
 			min_h = 0,
 			p = 4,
 			gap = 0,
-			ui.scroll {
+			on_key = page_keys,
+			ui.column {
 				w_full = true,
-				h_full = true,
-				ui.column {
-					w_full = true,
-					gap = 0,
-					ui.each(all_threads, agent_line, {
-						key = function(t: store.Thread)
-							return `{t.id}:{t.status}`
+				gap = 0,
+				ui.each(page_rows, function(t: store.Thread): Node
+					return ui.row {
+						w_full = true,
+						h = 46,
+						shrink = 0,
+						bg = function(): any
+							local list = page_rows:get()
+							local at = math.clamp(row_at:get(), 1, math.max(1, #list))
+							if list[at] and list[at].id == t.id then
+								return ui.raw("#ffffff12", "the row the keys are on")
+							end
+							return "#00000000"
 						end,
-					}),
-				},
+						rounded = 12,
+						agent_line(t),
+					}
+				end, {
+					key = function(t: store.Thread)
+						return `{t.id}:{t.status}`
+					end,
+				}),
+				-- The rest, counted: the island never grows with the count.
+				ui.show(function(): boolean
+					return #all_threads:get() > SHOWN_ROWS
+				end, ui.button {
+					w_full = true,
+					h = 34,
+					shrink = 0,
+					items = "center",
+					justify = "center",
+					rounded = 10,
+					bg = "#00000000",
+					hover = { bg = "#ffffff12" },
+					label = "Open the inbox",
+					on_click = function()
+						open_thread(nil)
+					end,
+					ui.text {
+						function(): string
+							return `+ {#all_threads:get() - SHOWN_ROWS} more`
+						end,
+						literal = true,
+						text_size = "$font.size.xs",
+						color = "#ffffff8c",
+					},
+				}),
 			},
+		},
+		-- The keys this page answers, as the palette's foot says its own.
+		ui.row {
+			w_full = true,
+			h = 22,
+			shrink = 0,
+			items = "center",
+			justify = "center",
+			gap = "$zeron.space.tight",
+			keys("up", "down"),
+			ui.text { "move", literal = true, text_size = "$font.size.xs", color = "#ffffff59" },
+			ui.text { "·", literal = true, text_size = "$font.size.xs", color = "#ffffff40" },
+			keys("enter"),
+			ui.text { "open", literal = true, text_size = "$font.size.xs", color = "#ffffff59" },
+			ui.text { "·", literal = true, text_size = "$font.size.xs", color = "#ffffff40" },
+			keys("escape"),
+			ui.text { "close", literal = true, text_size = "$font.size.xs", color = "#ffffff59" },
 		},
 	}, empty_state("bot", "No agents yet", "Ask one from Home, or press Alt Space from anywhere.", pill("Go to Home", false, function()
 		tab:set("home")
@@ -2285,6 +2584,9 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 	elseif kind == "slim" then
 		return if slim_as == "waiting"
 			then { w = 430, h = 44, r = 22, y = FLOAT, interactive = true }
+			-- (The slot: Apple's compact, 240 × 30, one mark and a count in
+			-- it whatever the number of threads behind it.)
+			elseif slim_as == "slot" then { w = 240, h = 30, r = 15, y = FLOAT, interactive = true }
 			elseif slim_as == "resting" then { w = 210, h = 34, r = 17, y = FLOAT, interactive = true }
 			-- (Two live at once, the island splits as Apple's does: the
 			-- first in the pill, the second in a round bubble beside it.)
@@ -2294,6 +2596,10 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 		return { w = 440, h = 60, r = 22, y = FLOAT, interactive = true }
 	elseif kind == "flash" then
 		return { w = 340, h = 40, r = 20, y = FLOAT, interactive = true }
+	elseif kind == "minimal" then
+		-- (Detached: no pill at the centre — that is spoken for — and one
+		-- 32-point satellite per thread, three at most.)
+		return { w = 0, h = 0, r = 0, y = FLOAT, interactive = true, sats = satellites:get() }
 	end
 	-- Opened, every page is the same width, so moving between them only
 	-- grows or shrinks the island; each is as tall as what it holds. (The
@@ -2309,7 +2615,11 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 		h = 284
 	elseif page == "agents" then
 		local n = #all_threads:get()
-		h = if n == 0 then 290 else CHROME + 34 + 14 + math.min(5, n) * 46
+		-- (Five rows at 46, the rest counted in a row of their own, and the
+		-- keys' line under them.)
+		h = if n == 0
+			then 290
+			else CHROME + 34 + 14 + math.min(5, n) * 46 + (if n > 5 then 34 else 0) + 22
 	elseif page == "tray" then
 		local n = #tray:get()
 		local lines = math.clamp(math.ceil(n / 4), 1, 2)
@@ -2328,9 +2638,22 @@ end
 local aim = ui.computed(function(): Shape
 	return shape_of(state:get(), tab:get(), slim_kind:get(), chat:get() ~= nil, math.min(3, #home_threads:get()), media:get() ~= nil)
 end)
+-- The bubbles the window's glass is cut for: the second live activity's,
+-- beside the pill, or the minimal island's satellites.
+local aim_sats = ui.computed(function(): { { d: number, o: number } }
+	local a = aim:get()
+	if a.sats then
+		return a.sats
+	end
+	local b = a.b or 0
+	if b >= 1 then
+		return { { d = b, o = a.w / 2 + (a.g or 0) + b / 2 } }
+	end
+	return {}
+end)
 ui.effect(function()
 	local a = aim:get()
-	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, y = a.y, b = a.b or 0, g = a.g or 0, interactive = a.interactive })
+	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, y = a.y, sats = aim_sats:get(), interactive = a.interactive })
 end)
 local aim_b = ui.computed(function(): number
 	return aim:get().b or 0
@@ -2473,11 +2796,13 @@ end
 -- the pill is the pill's own place negated, on the same spring (a spring is
 -- linear, so the two stay in register).
 local behind_copies: State<number> = ui.shared("notch.behind", 0)
+-- (The pill is centred in the window now that the bubbles are detached, so
+-- the backdrop inside it is offset by half of what it leaves over.)
 local behind_left = ui.computed(function(): number
-	return (aim_w:get() + aim_g:get() + aim_b:get() - 680) / 2 - 1
+	return -(680 - aim_w:get()) / 2 - 1
 end)
 local bubble_behind_left = ui.computed(function(): number
-	return (aim_w:get() + aim_g:get() + aim_b:get() - 680) / 2 - aim_w:get() - aim_g:get() - 1
+	return -((680 + aim_w:get()) / 2 + aim_g:get()) - 1
 end)
 local aim_half = ui.computed(function(): number
 	return aim_h:get() / 2
@@ -2505,7 +2830,10 @@ ui.effect(function()
 end)
 
 local function view(kind: string): Node
-	if kind == "hidden" then
+	if kind == "minimal" then
+		-- (No pill: the satellites are the island, drawn beside it.)
+		return ui.div {}
+	elseif kind == "hidden" then
 		return ui.div { w_full = true, h_full = true, bg = "$kx.attention", opacity = glow }
 	elseif kind == "slim" then
 		return ui.button {
@@ -2670,12 +2998,19 @@ local function bubble_view(kind: string): Node
 		if kind == "agents" then kx.Spinner { size = 14 } elseif kind == "music" then cover(22, 11) else timer_ring(20, 2.5),
 	}
 end
+-- (Where the bubble's left edge goes: beside the pill, which is centred in
+-- the window — src/kx/notch.rs places its region the same way.)
+local bubble_left = ui.computed(function(): number
+	return (680 + aim_w:get()) / 2 + aim_g:get()
+end)
 local bubble = ui.column {
 	id = "bubble",
 	theme = "zeron-dark",
+	absolute = true,
+	left = ui.spring(bubble_left, SPRING),
+	top = ui.spring(aim_y, SPRING),
 	w = ui.spring(aim_b, SPRING),
 	h = ui.spring(aim_h, SPRING),
-	y = ui.spring(aim_y, SPRING),
 	rounded = ui.spring(aim_half, SPRING),
 	shrink = 0,
 	overflow = "hidden",
@@ -2724,17 +3059,70 @@ local bubble = ui.column {
 	},
 }
 
-return ui.row {
+-- A minimal island's satellite: one thread's mark in a 32-point drop of the
+-- glass, its rim in the class it holds; a click opens that thread.
+local function satellite(s: { t: store.Thread, o: number }): Node
+	local t = s.t
+	local ring = if t.status == "running" then "#8fb4ff" elseif t.status == "failed" then "#f87171" elseif t.status == "needs_you" then "#ffb454" else "#ffffff"
+	return ui.column {
+		absolute = true,
+		left = 340 + s.o - SAT / 2,
+		top = function(): number
+			return aim_y:get()
+		end,
+		w = SAT,
+		h = SAT,
+		rounded = SAT / 2,
+		theme = "zeron-dark",
+		overflow = "hidden",
+		items = "center",
+		justify = "center",
+		bg = ui.raw("#0b0b0fe6", "a satellite's glass"),
+		border = 1,
+		border_color = ui.raw(ring .. "66", "a satellite's rim, in the class it holds"),
+		shadow = ui.raw({ x = 0, y = 4, blur = 12, spread = -3, color = "#00000066" }, "a satellite's soft shadow, inside the window's cut"),
+		ui.button {
+			w_full = true,
+			h_full = true,
+			bg = "#00000000",
+			items = "center",
+			justify = "center",
+			label = `Open {t.title}`,
+			tooltip = t.title,
+			on_click = function()
+				open_thread(t.id)
+			end,
+			kx.AgentMark { agent = t.harness_id, size = 16 },
+		},
+	}
+end
+
+return ui.div {
 	w_full = true,
 	h_full = true,
-	justify = "center",
-	items = "start",
 	on_file_drop = function(files: { any })
 		keep(files)
 		tab:set("tray")
 		expanded:set(true)
 	end,
-	island,
-	ui.div { w = ui.spring(aim_g, SPRING), shrink = 0 },
+	-- (The pill, centred; and beside it, detached, its bubbles: the second
+	-- live activity's, or — a minimal island — one satellite per thread.)
+	ui.row { w_full = true, h_full = true, justify = "center", items = "start", island },
 	bubble,
+	ui.presence(function(): string?
+		return if state:get() == "minimal" and #sat_at:get() > 0 then "sats" else nil
+	end, function(): Node
+		return ui.div {
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			bottom = 0,
+			ui.each(sat_at, satellite, {
+				key = function(s: { t: store.Thread, o: number })
+					return s.t.id
+				end,
+			}),
+		}
+	end, { enter = { opacity = { 0, 1 }, duration = 180 }, exit = { opacity = { 1, 0 }, duration = 120 } }),
 }

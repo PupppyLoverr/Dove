@@ -23,6 +23,42 @@ pub const SPRING: (f64, f64) = (360., 26.);
 /// Room round the pill for its shadow, in points.
 const SHADOW: f64 = 14.;
 
+/// The aim's parts, as `notch.size` sends them: the pill's width, height,
+/// corner and drop under the screen's edge, then each satellite's diameter
+/// and its signed offset from the island's centre (three at most — the most
+/// a minimal island shows — with 0 for one it hasn't).
+const W: usize = 0;
+const H: usize = 1;
+const R: usize = 2;
+const Y: usize = 3;
+const SATS: usize = 4;
+const AXES: usize = SATS + 3 * 2;
+
+/// Each satellite's box in points, relative to the island's centre: its left
+/// edge and its side, hanging from the pill's own top line. A satellite is
+/// a 32-point circle with its agent's mark and status ring (notch.luau).
+fn discs(now: &[f64; AXES]) -> impl Iterator<Item = (f64, f64)> + '_ {
+    (0..3).filter_map(move |i| {
+        let d = now[SATS + i * 2].max(0.);
+        let o = now[SATS + i * 2 + 1];
+        (d >= 1.).then(|| (o - d / 2., d))
+    })
+}
+
+/// The island's box in points, as far as the whole of it reaches: how wide
+/// it is and how tall, for a window that has to hold it (macOS), and where
+/// its middle is.
+fn span(now: &[f64; AXES]) -> (f64, f64) {
+    let pill = now[W].max(0.);
+    let mut reach = pill / 2.;
+    let mut tall = now[H].max(0.);
+    for (left, d) in discs(now) {
+        reach = reach.max((left + d / 2.).abs() + d / 2.);
+        tall = tall.max(d);
+    }
+    (reach * 2., tall)
+}
+
 /// Whether the notch opens beside the main window.
 pub fn enabled() -> bool {
     std::env::var_os("KX_NOTCH").is_none_or(|v| v != "0")
@@ -188,7 +224,7 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     // pill itself, its edges smooth, on a transparent window.
     window.set_glass(None);
     behind(cx, host);
-    let (aim, aimed) = flume::unbounded::<[f64; 6]>();
+    let (aim, aimed) = flume::unbounded::<[f64; AXES]>();
     let shaped = cx.window.clone();
     std::thread::Builder::new()
         .name("kx-notch-shape".into())
@@ -201,24 +237,44 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
             _ => 0.,
         };
         let (w, h, r, y) = (n("w").max(0.), n("h").max(0.), n("r").max(0.), n("y"));
-        // (The bubble beside it, as the Dynamic Island splits in two: its
-        // width, and the gap between; both 0 while there's none.)
-        let (b, g) = (n("b").max(0.), n("g").max(0.));
         let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
+        // (Satellites, detached: each its side and where its middle sits
+        // from the island's centre, for a minimal island with several
+        // threads live. None to show is none sent.)
+        let mut next = [0f64; AXES];
+        next[W] = w;
+        next[H] = h;
+        next[R] = r;
+        next[Y] = y;
+        let sats = req.field("sats").map(zgx_script::Value::list).unwrap_or(&[]);
+        for (i, sat) in sats.iter().take(3).enumerate() {
+            let of = |k: &str| match sat.field(k) {
+                Some(zgx_script::Value::Num(v)) => *v,
+                _ => 0.,
+            };
+            next[SATS + i * 2] = of("d").max(0.);
+            next[SATS + i * 2 + 1] = of("o");
+        }
         let scale = system_scale();
-        let (pw, ph) = (((w + g + b) * scale).round(), (h * scale).round());
+        // (What the pointer's watcher reads: the pill and its satellites
+        // together, so reaching for one opens the island as reaching for the
+        // pill does.)
+        let (span_w, span_h) = span(&next);
+        let (pw, ph) = ((span_w * scale).round(), (span_h * scale).round());
         let left = (screen_width() - pw) / 2.;
         if let Ok(mut rect) = RECT.lock() {
             *rect = (left, (y * scale).max(0.), pw, ph);
         }
-        let shown = h > 6. && y >= 0.;
+        // (A minimal island has no pill at all: its satellites alone are
+        // what comes into view.)
+        let shown = span_h * scale > 6. && y >= 0.;
         // (Coming into view: over every window, those kept on top too.)
         if shown && !SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
             to_top();
         }
         SHOWN.store(shown, std::sync::atomic::Ordering::Relaxed);
         resize.set_pointer_passthrough(!interactive);
-        let _ = aim.send([w, h, r, y, b, g]);
+        let _ = aim.send(next);
     });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
@@ -239,18 +295,19 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
 /// what's under. Woken by each new aim (w, h, corner, how far down, in
 /// points); asleep once it settles.
 #[cfg(windows)]
-fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
+fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; AXES]>) {
     use windows_sys::Win32::{
         Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute},
         Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
     };
     let scale = system_scale();
     let (k, c) = SPRING;
-    // Now and how fast, each of w, h, the corner, how far down, and the
-    // bubble's width and its gap.
-    let mut now = [0f64; 6];
-    let mut speed = [0f64; 6];
-    let mut aim = [0f64; 6];
+    // Now and how fast, each of the aim's axes: w, h, the corner, how far
+    // down, and every satellite's side and offset, springing together so a
+    // satellite arrives as the pill it leaves does.
+    let mut now = [0f64; AXES];
+    let mut speed = [0f64; AXES];
+    let mut aim = [0f64; AXES];
     let step = 1. / 120.;
     // Nothing shows until the script says what: the window exists before
     // its first shape, and uncut it's a box of glass the size of the
@@ -268,7 +325,7 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
                     windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(h, 0x11);
                 }
                 if let Ok(mut c) = CUT.lock() {
-                    *c = Some((h as isize, None));
+                    *c = Some((h as isize, Vec::new()));
                 }
                 let pref = DWMWCP_DONOTROUND;
                 DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&pref as *const i32).cast(), 4);
@@ -281,7 +338,7 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
     let mut first = true;
     loop {
         // Asleep until there's somewhere to go.
-        let settled = (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let settled = (0..AXES).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
         let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
         if settled && next.is_none() {
             return;
@@ -296,14 +353,14 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
             }
         }
         let started = std::time::Instant::now();
-        for i in 0..6 {
+        for i in 0..AXES {
             // (Semi-implicit Euler, at 120 a second.)
             speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
             now[i] += speed[i] * step;
         }
-        if (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+        if (0..AXES).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
             now = aim;
-            speed = [0.; 6];
+            speed = [0.; AXES];
         }
         let hwnd = match window {
             Some(h) => h,
@@ -323,35 +380,43 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
             }
         };
         let full = SIZE.0 * scale;
-        let (w, h) = ((now[0].max(0.) * scale).round(), (now[1].max(0.) * scale).round());
-        let r = (now[2].max(0.) * scale).min(h / 2.).min(w / 2.).round();
-        let (b, g) = ((now[4].max(0.) * scale).round(), (now[5].max(0.) * scale).round());
-        // (The pill and its bubble, centred together.)
-        let (left, top) = (((full - (w + g + b)) / 2.).round(), (now[3] * scale).round());
+        let (w, h) = ((now[W].max(0.) * scale).round(), (now[H].max(0.) * scale).round());
+        let r = (now[R].max(0.) * scale).min(h / 2.).min(w / 2.).round();
+        let top = (now[Y] * scale).round();
+        // (The pill centred, each satellite where its offset puts it from the
+        // screen's middle.)
+        let left = (full - w) / 2.;
+        let middle = full / 2.;
         // (The region is where clicks land, and room for the pill's soft
-        // shadow round it: the pill grown by `pad` on every side, its corners
-        // round about the pill's own centres, so the region's hard edge
-        // keeps clear of the pill's smooth one, the corners' too. It used to
-        // start at the pill's top, its corners shaving the pill's.)
+        // shadow round it: each shape grown by `pad` on every side, its
+        // corners round about the shape's own centres, so the region's hard
+        // edge keeps clear of the pill's smooth one, the corners' too. It
+        // used to start at the pill's top, its corners shaving the pill's.)
         let pad = (SHADOW * scale).round();
-        let round = |l: f64, w: f64, r: f64| {
+        let shape_of = |l: f64, t: f64, sw: f64, sh: f64, sr: f64| {
             [
                 (l - pad) as i32,
-                (top - pad) as i32,
-                (l + w + pad) as i32 + 1,
-                (top + h + pad * 1.5) as i32 + 1,
-                (2. * (r + pad)) as i32,
+                (t - pad) as i32,
+                (l + sw + pad) as i32 + 1,
+                (t + sh + pad * 1.5) as i32 + 1,
+                (2. * (sr + pad)) as i32,
             ]
         };
-        let cut = if w < 1. || h < 1. || top + h <= 0. { None } else { Some(round(left, w, r)) };
-        let bubble = if cut.is_some() && b >= 1. { Some(round(left + w + g, b, (b.min(h) / 2.).round())) } else { None };
-        if let Ok(mut c) = BUBBLE.lock() {
-            *c = bubble;
+        let pill = if w < 1. || h < 1. || top + h <= 0. { None } else { Some(shape_of(left, top, w, h, r)) };
+        let mut cuts = Vec::new();
+        if let Some(pill) = pill {
+            cuts.push(pill);
+        }
+        for (off, d) in discs(&now) {
+            let d = (d * scale).round();
+            if top + d > 0. {
+                cuts.push(shape_of(middle + (off * scale).round() - d / 2., top, d, d, d / 2.));
+            }
         }
         if let Ok(mut c) = CUT.lock() {
-            *c = Some((hwnd as isize, cut));
+            *c = Some((hwnd as isize, cuts.clone()));
         }
-        cut_to(hwnd, cut, bubble);
+        cut_to(hwnd, &cuts);
         let spent = started.elapsed();
         if let Some(rest) = std::time::Duration::from_secs_f64(step).checked_sub(spent) {
             std::thread::sleep(rest);
@@ -366,17 +431,17 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
 /// (with its bubble, and the room the shadow needs) as it springs. Nothing of
 /// the window is left over the desktop to eat a click.
 #[cfg(target_os = "macos")]
-fn shape(window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
+fn shape(window: WindowHandle, aimed: flume::Receiver<[f64; AXES]>) {
     let scale = system_scale();
     let (k, c) = SPRING;
-    let mut now = [0f64; 6];
-    let mut speed = [0f64; 6];
-    let mut aim = [0f64; 6];
+    let mut now = [0f64; AXES];
+    let mut speed = [0f64; AXES];
+    let mut aim = [0f64; AXES];
     let step = 1. / 120.;
     let mut first = true;
     loop {
         // Asleep until there's somewhere to go.
-        let settled = (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let settled = (0..AXES).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
         let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
         if settled && next.is_none() {
             return;
@@ -391,19 +456,19 @@ fn shape(window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
             }
         }
         let started = std::time::Instant::now();
-        for i in 0..6 {
+        for i in 0..AXES {
             // (Semi-implicit Euler, at 120 a second.)
             speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
             now[i] += speed[i] * step;
         }
-        if (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+        if (0..AXES).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
             now = aim;
-            speed = [0.; 6];
+            speed = [0.; AXES];
         }
-        // The pill and its bubble, centred together; the window grows round
-        // them by the shadow's room on every side.
-        let wide = now[0].max(0.) + now[4].max(0.) + now[5].max(0.);
-        let tall = now[3].max(0.) + now[1].max(0.);
+        // The pill and its satellites together; the window grows round them
+        // by the shadow's room on every side.
+        let (wide, tall) = span(&now);
+        let tall = tall + now[3].max(0.);
         let points = screen_width() / scale;
         let w = ((wide + SHADOW * 2.) * scale).round() as u32;
         let h = ((tall + SHADOW * 2.) * scale).round() as u32;
@@ -419,7 +484,7 @@ fn shape(window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
+fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; AXES]>) {
     while aimed.recv().is_ok() {}
 }
 
@@ -428,7 +493,7 @@ fn shape(_window: WindowHandle, aimed: flume::Receiver<[f64; 6]>) {
 #[cfg(windows)]
 fn to_top() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos};
-    let Some(hwnd) = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h) else { return };
+    let Some(hwnd) = CUT.lock().ok().and_then(|c| c.clone()).map(|(h, _)| h) else { return };
     // SAFETY: our own window; its place in the order only.
     unsafe {
         SetWindowPos(hwnd as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -526,7 +591,7 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
 #[cfg(windows)]
 fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
     use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
-    let hwnd = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h)?;
+    let hwnd = CUT.lock().ok().and_then(|c| c.clone()).map(|(h, _)| h)?;
     let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     // SAFETY: a plain query of our own window.
     if unsafe { GetWindowRect(hwnd as _, &mut r) } == 0 {
@@ -726,24 +791,22 @@ fn quarter(px: &[u8], w: usize, h: usize) -> (u32, u32, Vec<u8>) {
 /// still has it. (The window loses its region when the system or zgx
 /// re-applies its glass or shows it, and uncut it's a box of glass the size
 /// of the largest island.)
-static CUT: std::sync::Mutex<Option<(isize, Option<[i32; 5]>)>> = std::sync::Mutex::new(None);
-/// The bubble beside it, cut with it (the same left, top, right, bottom,
-/// corner), or None while there's none.
-static BUBBLE: std::sync::Mutex<Option<[i32; 5]>> = std::sync::Mutex::new(None);
-
-/// Cuts `hwnd` to `cut`.
+static CUT: std::sync::Mutex<Option<(isize, Vec<[i32; 5]>)>> = std::sync::Mutex::new(None);
+/// Cuts `hwnd` to `cut`: every shape of the island merged into one region —
+/// the pill and each satellite, which are separate boxes of glass.
 #[cfg(windows)]
-fn cut_to(hwnd: windows_sys::Win32::Foundation::HWND, cut: Option<[i32; 5]>, bubble: Option<[i32; 5]>) {
+fn cut_to(hwnd: windows_sys::Win32::Foundation::HWND, cuts: &[[i32; 5]]) {
     use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, RGN_OR, SetWindowRgn};
-    // SAFETY: regions made here; the bubble's merged into the pill's and
-    // freed, the pill's handed to our own window, which owns it from then on.
+    // SAFETY: regions made here; each shape's merged into the first and
+    // freed, the first handed to our own window, which owns it from then on.
     unsafe {
-        let region = match cut {
+        let mut cuts = cuts.iter();
+        let region = match cuts.next() {
             None => CreateRectRgn(0, 0, 0, 0),
-            Some([l, t, r, b, c]) => CreateRoundRectRgn(l, t, r, b, c, c),
+            Some([l, t, r, b, c]) => CreateRoundRectRgn(*l, *t, *r, *b, *c, *c),
         };
-        if let (Some(_), Some([l, t, r, b, c])) = (cut, bubble) {
-            let other = CreateRoundRectRgn(l, t, r, b, c, c);
+        for [l, t, r, b, c] in cuts {
+            let other = CreateRoundRectRgn(*l, *t, *r, *b, *c, *c);
             CombineRgn(region, region, other, RGN_OR);
             DeleteObject(other as _);
         }
@@ -758,18 +821,21 @@ fn keep_cut() {
         Foundation::RECT,
         Graphics::Gdi::{GetWindowRgnBox, NULLREGION},
     };
-    let Some((hwnd, cut)) = CUT.lock().ok().and_then(|c| *c) else { return };
-    let bubble = BUBBLE.lock().ok().and_then(|b| *b);
+    let Some((hwnd, cuts)) = CUT.lock().ok().and_then(|c| c.clone()) else { return };
     let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
     let mut b = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     // SAFETY: a plain query of our own window.
     let kind = unsafe { GetWindowRgnBox(hwnd, &mut b) };
-    let holds = match cut {
+    // (The box of the whole region: every shape's reached to, give or take a
+    // pixel. The pill and its satellites are one region, so its box is the
+    // outermost of theirs.)
+    let holds = match cuts.split_first() {
         None => kind == NULLREGION,
-        // (The box of a round rect: its sides, give or take a pixel.)
-        Some([l, t, r, bottom, _]) => {
-            // (With the bubble, the box reaches to its right side.)
-            let r = bubble.map_or(r, |b| b[2].max(r));
+        Some((first, rest)) => {
+            let [l, t, r, bottom, _] = *first;
+            let (l, t, r, bottom) = rest.iter().fold((l, t, r, bottom), |(l, t, r, bottom), [a, b, c, d, _]| {
+                (l.min(*a), t.min(*b), r.max(*c), bottom.max(*d))
+            });
             kind != 0
                 && (b.left - l.max(0)).abs() <= 1
                 && (b.top - t.max(0)).abs() <= 1
@@ -778,7 +844,7 @@ fn keep_cut() {
         }
     };
     if !holds {
-        cut_to(hwnd, cut, bubble);
+        cut_to(hwnd, &cuts);
     }
 }
 
